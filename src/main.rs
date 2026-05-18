@@ -1,11 +1,6 @@
 fn main() {
-    if let Err(error) = run() {
+    if let Err(error) = context_forge::tui::terminal::run_terminal_app() {
         eprintln!("context-forge: {error:#}");
         std::process::exit(1);
     }
-}
-
-fn run() -> anyhow::Result<()> {
-    println!("context-forge TUI coming online");
-    Ok(())
 }
