@@ -142,3 +142,72 @@ impl StepState {
         )
     }
 }
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ScanReport {
+    pub brew_available: bool,
+    pub cargo_available: bool,
+    pub rtk_present: bool,
+    pub rtk_gain_ok: bool,
+    pub rtk_init_show_ok: bool,
+    pub node_major: Option<u32>,
+    pub npx_available: bool,
+    pub caveman_local_repo: Option<String>,
+}
+
+impl ScanReport {
+    pub fn builder() -> ScanReportBuilder {
+        ScanReportBuilder::default()
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ScanReportBuilder {
+    report: ScanReport,
+}
+
+impl ScanReportBuilder {
+    pub fn brew_available(mut self, value: bool) -> Self {
+        self.report.brew_available = value;
+        self
+    }
+
+    pub fn cargo_available(mut self, value: bool) -> Self {
+        self.report.cargo_available = value;
+        self
+    }
+
+    pub fn rtk_present(mut self, value: bool) -> Self {
+        self.report.rtk_present = value;
+        self
+    }
+
+    pub fn rtk_gain_ok(mut self, value: bool) -> Self {
+        self.report.rtk_gain_ok = value;
+        self
+    }
+
+    pub fn rtk_init_show_ok(mut self, value: bool) -> Self {
+        self.report.rtk_init_show_ok = value;
+        self
+    }
+
+    pub fn node_major(mut self, value: Option<u32>) -> Self {
+        self.report.node_major = value;
+        self
+    }
+
+    pub fn npx_available(mut self, value: bool) -> Self {
+        self.report.npx_available = value;
+        self
+    }
+
+    pub fn caveman_local_repo(mut self, value: Option<&str>) -> Self {
+        self.report.caveman_local_repo = value.map(str::to_owned);
+        self
+    }
+
+    pub fn build(self) -> ScanReport {
+        self.report
+    }
+}
