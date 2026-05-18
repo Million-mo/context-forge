@@ -211,3 +211,35 @@ impl ScanReportBuilder {
         self.report
     }
 }
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StepOutput {
+    pub command: String,
+    pub code: i32,
+    pub stdout: String,
+    pub stderr: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExecutionResult {
+    pub success: bool,
+    pub steps: Vec<PlanStep>,
+    pub outputs: Vec<StepOutput>,
+}
+
+impl ExecutionResult {
+    pub fn failure_summary(&self) -> String {
+        self.outputs
+            .iter()
+            .rev()
+            .find(|output| output.code != 0)
+            .map(|output| {
+                if output.stderr.trim().is_empty() {
+                    output.stdout.trim().to_owned()
+                } else {
+                    output.stderr.trim().to_owned()
+                }
+            })
+            .unwrap_or_default()
+    }
+}
