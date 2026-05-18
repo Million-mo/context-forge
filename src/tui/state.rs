@@ -1,4 +1,8 @@
-use crate::domain::{Action, ExecutionMode, ToolSelection};
+use crate::domain::{Action, ExecutionMode, ExecutionResult, Plan, ScanReport, ToolSelection};
+use crate::executor::execute_plan;
+use crate::planner::build_plan;
+use crate::runner::CommandRunner;
+use crate::scanner::scan_selected_tools;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AppPage {
@@ -24,6 +28,9 @@ pub struct AppState {
     pub selection: ToolSelection,
     pub scan_started: bool,
     pub details_expanded: bool,
+    pub scan: Option<ScanReport>,
+    pub plan: Option<Plan>,
+    pub execution_result: Option<ExecutionResult>,
 }
 
 impl AppState {
@@ -33,6 +40,9 @@ impl AppState {
             selection: ToolSelection::default(),
             scan_started: false,
             details_expanded: false,
+            scan: None,
+            plan: None,
+            execution_result: None,
         }
     }
 
@@ -41,6 +51,9 @@ impl AppState {
             (AppPage::ToolSelection, KeyCommand::Enter) => {
                 self.page = AppPage::Scanning;
                 self.scan_started = true;
+            }
+            (AppPage::PlanSummary, KeyCommand::Enter) => {
+                self.page = AppPage::Executing;
             }
             (AppPage::PlanSummary, KeyCommand::Preview) => {
                 self.selection.mode = ExecutionMode::Preview;
@@ -56,6 +69,25 @@ impl AppState {
             }
             _ => {}
         }
+    }
+
+    pub async fn scan_and_plan(&mut self, runner: &dyn CommandRunner) {
+        self.page = AppPage::Scanning;
+        self.scan_started = true;
+        let scan = scan_selected_tools(runner, &self.selection.tools).await;
+        let plan = build_plan(&self.selection, &scan);
+        self.scan = Some(scan);
+        self.plan = Some(plan);
+        self.page = AppPage::PlanSummary;
+    }
+
+    pub async fn execute_current_plan(&mut self, runner: &dyn CommandRunner) {
+        self.page = AppPage::Executing;
+        if let Some(plan) = self.plan.clone() {
+            let result = execute_plan(plan, self.selection.mode, runner).await;
+            self.execution_result = Some(result);
+        }
+        self.page = AppPage::Results;
     }
 }
 

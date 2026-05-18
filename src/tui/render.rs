@@ -33,13 +33,9 @@ pub fn render(frame: &mut Frame<'_>, app: &AppState) {
     match app.page {
         AppPage::ToolSelection => render_tool_selection(frame, app, chunks[1]),
         AppPage::Scanning => render_message(frame, "Scanning selected tools...", chunks[1]),
-        AppPage::PlanSummary => render_message(
-            frame,
-            "Plan Summary\nD 预演模式    E expand commands    Enter execute    Esc back",
-            chunks[1],
-        ),
+        AppPage::PlanSummary => render_plan_summary(frame, app, chunks[1]),
         AppPage::Executing => render_message(frame, "Executing plan...", chunks[1]),
-        AppPage::Results => render_message(frame, "Results", chunks[1]),
+        AppPage::Results => render_results(frame, app, chunks[1]),
     }
 
     let footer = Paragraph::new("Enter continue   D 预演模式   E details   Esc back")
@@ -64,6 +60,56 @@ fn render_tool_selection(frame: &mut Frame<'_>, app: &AppState, area: Rect) {
 fn render_message(frame: &mut Frame<'_>, message: &str, area: Rect) {
     frame.render_widget(
         Paragraph::new(message).block(Block::default().borders(Borders::ALL)),
+        area,
+    );
+}
+
+fn render_plan_summary(frame: &mut Frame<'_>, app: &AppState, area: Rect) {
+    let mut lines = vec![Line::from("Plan Summary")];
+    if let Some(plan) = &app.plan {
+        for step in &plan.steps {
+            lines.push(Line::from(format!(
+                "{}: {} -> {}",
+                step.tool.label(),
+                step.title,
+                step.command.display()
+            )));
+        }
+        lines.push(Line::from(format!(
+            "Touched paths: {}",
+            plan.touched_paths().join(", ")
+        )));
+    } else {
+        lines.push(Line::from("No plan built yet"));
+    }
+    lines.push(Line::from(
+        "D 预演模式    E details    Enter execute    Esc back",
+    ));
+
+    frame.render_widget(
+        Paragraph::new(lines).block(Block::default().borders(Borders::ALL)),
+        area,
+    );
+}
+
+fn render_results(frame: &mut Frame<'_>, app: &AppState, area: Rect) {
+    let mut lines = vec![Line::from("Results")];
+    if let Some(result) = &app.execution_result {
+        lines.push(Line::from(format!("success: {}", result.success)));
+        for step in &result.steps {
+            lines.push(Line::from(format!(
+                "{}: {:?} {}",
+                step.tool.label(),
+                step.state,
+                step.command.display()
+            )));
+        }
+    } else {
+        lines.push(Line::from("No execution result"));
+    }
+
+    frame.render_widget(
+        Paragraph::new(lines).block(Block::default().borders(Borders::ALL)),
         area,
     );
 }
