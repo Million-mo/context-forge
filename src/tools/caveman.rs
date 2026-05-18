@@ -25,7 +25,10 @@ pub fn plan(action: Action, scan: &ScanReport) -> Vec<PlanStep> {
         ],
         Action::Verify => vec![list_step(scan)],
         Action::Install | Action::Recommended => {
-            vec![installer_step("Install Caveman", scan, ["--all"]), list_step(scan)]
+            vec![
+                installer_step("Install Caveman", scan, ["--all"]),
+                list_step(scan),
+            ]
         }
     }
 }
@@ -71,5 +74,8 @@ fn step<const N: usize>(title: &str, program: &str, args: [&str; N]) -> PlanStep
 }
 
 fn touched_paths() -> Vec<String> {
-    CAVEMAN_PATHS.iter().map(|path| (*path).to_owned()).collect()
+    CAVEMAN_PATHS
+        .iter()
+        .map(|path| (*path).to_owned())
+        .collect()
 }

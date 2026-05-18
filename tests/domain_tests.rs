@@ -33,7 +33,10 @@ fn plan_reports_touched_paths_from_all_steps_without_duplicates() {
             ToolId::Caveman,
             "Install Caveman",
             CommandSpec::new("node", ["bin/install.js", "--all"]),
-            vec!["~/.claude/settings.json".into(), "~/.config/opencode/".into()],
+            vec![
+                "~/.claude/settings.json".into(),
+                "~/.config/opencode/".into(),
+            ],
         ),
     ]);
 

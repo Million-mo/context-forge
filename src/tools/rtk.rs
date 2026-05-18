@@ -20,7 +20,11 @@ pub fn plan(action: Action, scan: &ScanReport) -> Vec<PlanStep> {
 
 fn recommended_steps(scan: &ScanReport) -> Vec<PlanStep> {
     if scan.rtk_present && !scan.rtk_gain_ok {
-        let mut steps = vec![step("Remove wrong RTK package", "cargo", ["uninstall", "rtk"])];
+        let mut steps = vec![step(
+            "Remove wrong RTK package",
+            "cargo",
+            ["uninstall", "rtk"],
+        )];
         steps.extend(install_steps(scan));
         return steps;
     }
@@ -47,7 +51,10 @@ fn install_steps(scan: &ScanReport) -> Vec<PlanStep> {
         )
     };
 
-    let mut steps = vec![install, step("Configure RTK globally", "rtk", ["init", "-g"])];
+    let mut steps = vec![
+        install,
+        step("Configure RTK globally", "rtk", ["init", "-g"]),
+    ];
     steps.extend(verify_steps());
     steps
 }
@@ -65,7 +72,11 @@ fn uninstall_steps() -> Vec<PlanStep> {
 
 fn upgrade_steps(scan: &ScanReport) -> Vec<PlanStep> {
     let mut steps = if scan.brew_available {
-        vec![step("Upgrade RTK with Homebrew", "brew", ["upgrade", "rtk"])]
+        vec![step(
+            "Upgrade RTK with Homebrew",
+            "brew",
+            ["upgrade", "rtk"],
+        )]
     } else {
         vec![step(
             "Upgrade RTK with Cargo",

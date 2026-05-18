@@ -45,7 +45,11 @@ async fn scan_caveman_extracts_node_major_version_and_npx() {
 #[tokio::test]
 async fn scan_caveman_handles_missing_node() {
     let runner = FakeCommandRunner::new()
-        .with_output("node", ["--version"], Output::failure(127, "node not found\n"))
+        .with_output(
+            "node",
+            ["--version"],
+            Output::failure(127, "node not found\n"),
+        )
         .with_failure("which", ["npx"], 1, "");
 
     let scan = scan_selected_tools(&runner, &[ToolId::Caveman]).await;

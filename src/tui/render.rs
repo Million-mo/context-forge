@@ -117,6 +117,8 @@ fn render_results(frame: &mut Frame<'_>, app: &AppState, area: Rect) {
 pub fn render_to_text_for_test(app: &AppState, width: u16, height: u16) -> String {
     let backend = TestBackend::new(width, height);
     let mut terminal = ratatui::Terminal::new(backend).expect("test terminal");
-    terminal.draw(|frame| render(frame, app)).expect("draw frame");
+    terminal
+        .draw(|frame| render(frame, app))
+        .expect("draw frame");
     format!("{:?}", terminal.backend().buffer())
 }

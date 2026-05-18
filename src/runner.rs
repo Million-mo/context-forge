@@ -84,7 +84,8 @@ impl FakeCommandRunner {
         args: [&str; N],
         stdout: &str,
     ) -> Self {
-        self.outputs.insert(key(program, args), Output::success(stdout));
+        self.outputs
+            .insert(key(program, args), Output::success(stdout));
         self
     }
 
@@ -114,9 +115,12 @@ impl FakeCommandRunner {
 impl CommandRunner for FakeCommandRunner {
     fn run<'a>(&'a self, command: &'a CommandSpec) -> RunnerFuture<'a> {
         Box::pin(async move {
-            self.outputs.get(&command.display()).cloned().unwrap_or_else(|| {
-                Output::failure(127, format!("no fake output for {}", command.display()))
-            })
+            self.outputs
+                .get(&command.display())
+                .cloned()
+                .unwrap_or_else(|| {
+                    Output::failure(127, format!("no fake output for {}", command.display()))
+                })
         })
     }
 }

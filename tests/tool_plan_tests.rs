@@ -14,11 +14,20 @@ fn rtk_missing_with_brew_generates_brew_install_configure_and_verify() {
         .build();
 
     let plan = build_plan(&selection, &scan);
-    let commands: Vec<_> = plan.steps.iter().map(|step| step.command.display()).collect();
+    let commands: Vec<_> = plan
+        .steps
+        .iter()
+        .map(|step| step.command.display())
+        .collect();
 
     assert_eq!(
         commands,
-        vec!["brew install rtk", "rtk init -g", "rtk gain", "rtk init --show"]
+        vec![
+            "brew install rtk",
+            "rtk init -g",
+            "rtk gain",
+            "rtk init --show"
+        ]
     );
 }
 
@@ -36,7 +45,11 @@ fn wrong_rtk_identity_generates_cargo_uninstall_before_install() {
         .build();
 
     let plan = build_plan(&selection, &scan);
-    let commands: Vec<_> = plan.steps.iter().map(|step| step.command.display()).collect();
+    let commands: Vec<_> = plan
+        .steps
+        .iter()
+        .map(|step| step.command.display())
+        .collect();
 
     assert_eq!(
         commands,
@@ -64,7 +77,11 @@ fn rtk_broken_config_generates_repair_plan() {
         .build();
 
     let plan = build_plan(&selection, &scan);
-    let commands: Vec<_> = plan.steps.iter().map(|step| step.command.display()).collect();
+    let commands: Vec<_> = plan
+        .steps
+        .iter()
+        .map(|step| step.command.display())
+        .collect();
 
     assert_eq!(commands, vec!["rtk init -g", "rtk gain", "rtk init --show"]);
 }
@@ -102,7 +119,11 @@ fn caveman_with_node_generates_all_install_and_list_verification() {
         .build();
 
     let plan = build_plan(&selection, &scan);
-    let commands: Vec<_> = plan.steps.iter().map(|step| step.command.display()).collect();
+    let commands: Vec<_> = plan
+        .steps
+        .iter()
+        .map(|step| step.command.display())
+        .collect();
 
     assert_eq!(
         commands,
@@ -128,7 +149,11 @@ fn uninstall_selected_tools_uses_upstream_uninstall_commands() {
         .build();
 
     let plan = build_plan(&selection, &scan);
-    let commands: Vec<_> = plan.steps.iter().map(|step| step.command.display()).collect();
+    let commands: Vec<_> = plan
+        .steps
+        .iter()
+        .map(|step| step.command.display())
+        .collect();
 
     assert_eq!(
         commands,

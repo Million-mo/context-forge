@@ -29,9 +29,7 @@ pub async fn scan_selected_tools(runner: &dyn CommandRunner, tools: &[ToolId]) -
         };
         let npx_available = run_ok(runner, CommandSpec::new("which", ["npx"])).await;
 
-        builder = builder
-            .node_major(node_major)
-            .npx_available(npx_available);
+        builder = builder.node_major(node_major).npx_available(npx_available);
     }
 
     builder.build()
