@@ -1,4 +1,4 @@
-use context_forge::domain::{CommandSpec, ExecutionMode, Plan, PlanStep, StepState, ToolId};
+use context_forge::domain::{CommandSpec, Plan, PlanStep, StepState, ToolId};
 use context_forge::executor::execute_plan;
 use context_forge::runner::FakeCommandRunner;
 
@@ -20,23 +20,12 @@ fn sample_plan() -> Plan {
 }
 
 #[tokio::test]
-async fn preview_mode_does_not_run_commands_and_marks_steps_skipped() {
-    let runner = FakeCommandRunner::new();
-    let result = execute_plan(sample_plan(), ExecutionMode::Preview, &runner).await;
-
-    assert!(result.success);
-    assert_eq!(result.outputs.len(), 0);
-    assert_eq!(result.steps[0].state, StepState::Skipped);
-    assert_eq!(result.steps[1].state, StepState::Skipped);
-}
-
-#[tokio::test]
 async fn apply_mode_runs_all_steps_until_success() {
     let runner = FakeCommandRunner::new()
         .with_success("rtk", ["init", "-g"], "configured\n")
         .with_success("rtk", ["gain"], "saved tokens\n");
 
-    let result = execute_plan(sample_plan(), ExecutionMode::Apply, &runner).await;
+    let result = execute_plan(sample_plan(), &runner).await;
 
     assert!(result.success);
     assert_eq!(result.outputs.len(), 2);
@@ -50,11 +39,42 @@ async fn apply_mode_stops_on_first_failed_step() {
         .with_failure("rtk", ["init", "-g"], 2, "permission denied\n")
         .with_success("rtk", ["gain"], "should not run\n");
 
-    let result = execute_plan(sample_plan(), ExecutionMode::Apply, &runner).await;
+    let result = execute_plan(sample_plan(), &runner).await;
 
     assert!(!result.success);
     assert_eq!(result.outputs.len(), 1);
     assert_eq!(result.steps[0].state, StepState::Failed { code: Some(2) });
     assert_eq!(result.steps[1].state, StepState::Pending);
     assert!(result.failure_summary().contains("permission denied"));
+}
+
+#[tokio::test]
+async fn continue_on_failure_does_not_stop_execution() {
+    let runner = FakeCommandRunner::new()
+        .with_failure("rtk", ["init", "-g"], 2, "first fail\n")
+        .with_success("rtk", ["gain"], "second ok\n");
+
+    let plan = Plan::new(vec![
+        PlanStep::new(
+            ToolId::Rtk,
+            "Step that can fail",
+            CommandSpec::new("rtk", ["init", "-g"]),
+            vec![],
+        )
+        .with_continue_on_failure(),
+        PlanStep::new(
+            ToolId::Rtk,
+            "Step that must succeed",
+            CommandSpec::new("rtk", ["gain"]),
+            vec![],
+        ),
+    ]);
+
+    let result = execute_plan(plan, &runner).await;
+
+    // success stays true — continue_on_failure prevents aborting the plan
+    assert!(result.success);
+    assert_eq!(result.outputs.len(), 2);
+    assert_eq!(result.steps[0].state, StepState::Failed { code: Some(2) });
+    assert_eq!(result.steps[1].state, StepState::Succeeded);
 }

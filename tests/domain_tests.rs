@@ -1,14 +1,11 @@
-use context_forge::domain::{
-    Action, CommandSpec, ExecutionMode, Plan, PlanStep, StepState, ToolId, ToolSelection,
-};
+use context_forge::domain::{CommandSpec, Plan, PlanStep, StepState, ToolId, ToolSelection};
 
 #[test]
-fn default_tool_selection_selects_rtk_and_caveman_with_recommended_action() {
+fn default_tool_selection_selects_rtk() {
     let selection = ToolSelection::default();
 
-    assert_eq!(selection.mode, ExecutionMode::Apply);
-    assert_eq!(selection.tools, vec![ToolId::Rtk, ToolId::Caveman]);
-    assert_eq!(selection.action, Action::Recommended);
+    assert_eq!(selection.tool, ToolId::Rtk);
+    assert_eq!(selection.action, context_forge::domain::Action::Install);
 }
 
 #[test]
@@ -57,4 +54,27 @@ fn step_state_knows_when_execution_should_stop() {
     assert!(StepState::Succeeded.is_terminal());
     assert!(StepState::Skipped.is_terminal());
     assert!(StepState::Failed { code: Some(2) }.is_terminal());
+}
+
+#[test]
+fn plan_step_continue_on_failure_defaults_to_false() {
+    let step = PlanStep::new(
+        ToolId::Rtk,
+        "test",
+        CommandSpec::new("echo", ["hello"]),
+        vec![],
+    );
+    assert!(!step.continue_on_failure);
+}
+
+#[test]
+fn plan_step_with_continue_on_failure_sets_flag() {
+    let step = PlanStep::new(
+        ToolId::Rtk,
+        "test",
+        CommandSpec::new("echo", ["hello"]),
+        vec![],
+    )
+    .with_continue_on_failure();
+    assert!(step.continue_on_failure);
 }

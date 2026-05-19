@@ -1,116 +1,176 @@
-use crate::domain::{Action, CommandSpec, PlanStep, ScanReport, ToolId};
+use crate::domain::{AiTool, CommandSpec, PlanStep, ScanReport, ToolId};
 
 const RTK_PATHS: &[&str] = &[
     "~/.claude/settings.json",
     "~/.claude/hooks/",
     "~/.claude/RTK.md",
-    "~/.claude/CLAUDE.md",
 ];
 
-pub fn plan(action: Action, scan: &ScanReport) -> Vec<PlanStep> {
-    match action {
-        Action::Uninstall => uninstall_steps(),
-        Action::Upgrade => upgrade_steps(scan),
-        Action::Repair => repair_steps(),
-        Action::Verify => verify_steps(),
-        Action::Install => install_steps(scan),
-        Action::Recommended => recommended_steps(scan),
-    }
-}
-
-fn recommended_steps(scan: &ScanReport) -> Vec<PlanStep> {
-    if scan.rtk_present && !scan.rtk_gain_ok {
-        let mut steps = vec![step(
-            "Remove wrong RTK package",
-            "cargo",
-            ["uninstall", "rtk"],
-        )];
-        steps.extend(install_steps(scan));
-        return steps;
+pub fn install_plan(scan: &ScanReport, ai_tools: &[AiTool]) -> Vec<PlanStep> {
+    if scan.rtk_present {
+        return vec![init_step("Configure RTK globally", ai_tools)];
     }
 
-    if !scan.rtk_present {
-        return install_steps(scan);
-    }
+    let mut steps = Vec::new();
 
-    if !scan.rtk_init_show_ok {
-        return repair_steps();
-    }
-
-    verify_steps()
-}
-
-fn install_steps(scan: &ScanReport) -> Vec<PlanStep> {
-    let install = if scan.brew_available {
-        step("Install RTK with Homebrew", "brew", ["install", "rtk"])
-    } else {
-        step(
-            "Install RTK with Cargo",
-            "cargo",
-            ["install", "--git", "https://github.com/rtk-ai/rtk"],
+    if scan.cargo_available {
+        steps.push(rtk_step(
+            "Install RTK via cargo",
+            CommandSpec::new(
+                "cargo",
+                ["install", "--git", "https://github.com/rtk-ai/rtk"],
+            ),
         )
-    };
+        .with_continue_on_failure());
+    }
+    if scan.brew_available {
+        steps.push(rtk_step(
+            "Install RTK via Homebrew",
+            CommandSpec::new("brew", ["install", "rtk"]),
+        )
+        .with_continue_on_failure());
+    }
+    steps.push(
+        rtk_step(
+            "Install RTK via curl script",
+            CommandSpec::new(
+                "sh",
+                [
+                    "-c",
+                    "curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh",
+                ],
+            ),
+        )
+        .with_continue_on_failure(),
+    );
 
-    let mut steps = vec![
-        install,
-        step("Configure RTK globally", "rtk", ["init", "-g"]),
-    ];
-    steps.extend(verify_steps());
+    steps.push(init_step("Configure RTK globally", ai_tools));
     steps
 }
 
-fn uninstall_steps() -> Vec<PlanStep> {
-    vec![
-        step(
-            "Uninstall RTK global integration",
-            "rtk",
-            ["init", "-g", "--uninstall"],
-        ),
-        step("Remove RTK Homebrew package", "brew", ["uninstall", "rtk"]),
-    ]
-}
+pub fn uninstall_plan(scan: &ScanReport, ai_tools: &[AiTool]) -> Vec<PlanStep> {
+    if !scan.rtk_present {
+        return vec![];
+    }
 
-fn upgrade_steps(scan: &ScanReport) -> Vec<PlanStep> {
-    let mut steps = if scan.brew_available {
-        vec![step(
-            "Upgrade RTK with Homebrew",
-            "brew",
-            ["upgrade", "rtk"],
-        )]
-    } else {
-        vec![step(
-            "Upgrade RTK with Cargo",
-            "cargo",
-            [
-                "install",
-                "--git",
-                "https://github.com/rtk-ai/rtk",
-                "--force",
-            ],
-        )]
-    };
-    steps.extend(repair_steps());
+    let mut steps = vec![uninit_step("Unconfigure RTK hooks", ai_tools)];
+
+    if scan.cargo_available {
+        steps.push(
+            rtk_step(
+                "Remove RTK via cargo",
+                CommandSpec::new("cargo", ["uninstall", "rtk"]),
+            )
+            .with_continue_on_failure(),
+        );
+    }
+    if scan.brew_available {
+        steps.push(
+            rtk_step(
+                "Remove RTK via Homebrew",
+                CommandSpec::new("brew", ["uninstall", "rtk"]),
+            )
+            .with_continue_on_failure(),
+        );
+    }
+    steps.push(
+        rtk_step(
+            "Remove RTK binary from ~/.local/bin",
+            CommandSpec::new("rm", ["-f", "~/.local/bin/rtk"]),
+        )
+        .with_continue_on_failure(),
+    );
+
+    steps.push(
+        shell_step(
+            "Remove RTK configs",
+            "rm -rf ~/.config/rtk/ ~/Library/Application\\ Support/rtk/ ~/.local/share/rtk/",
+        )
+        .with_continue_on_failure(),
+    );
+
     steps
 }
 
-fn repair_steps() -> Vec<PlanStep> {
-    let mut steps = vec![step("Repair RTK global integration", "rtk", ["init", "-g"])];
-    steps.extend(verify_steps());
+pub fn upgrade_plan(scan: &ScanReport, ai_tools: &[AiTool]) -> Vec<PlanStep> {
+    let mut steps = Vec::new();
+
+    if scan.cargo_available {
+        steps.push(
+            rtk_step(
+                "Upgrade RTK via cargo",
+                CommandSpec::new(
+                    "cargo",
+                    [
+                        "install",
+                        "--force",
+                        "--git",
+                        "https://github.com/rtk-ai/rtk",
+                    ],
+                ),
+            )
+            .with_continue_on_failure(),
+        );
+    }
+    if scan.brew_available {
+        steps.push(
+            rtk_step(
+                "Upgrade RTK via Homebrew",
+                CommandSpec::new("brew", ["upgrade", "rtk"]),
+            )
+            .with_continue_on_failure(),
+        );
+    }
+    steps.push(
+        rtk_step(
+            "Upgrade RTK via curl script",
+            CommandSpec::new(
+                "sh",
+                [
+                    "-c",
+                    "curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh",
+                ],
+            ),
+        )
+        .with_continue_on_failure(),
+    );
+
+    steps.push(init_step("Re-init RTK globally", ai_tools));
     steps
 }
 
-fn verify_steps() -> Vec<PlanStep> {
-    vec![
-        step("Verify RTK identity", "rtk", ["gain"]),
-        step("Verify RTK hook status", "rtk", ["init", "--show"]),
-    ]
+fn init_step(title: &str, ai_tools: &[AiTool]) -> PlanStep {
+    let mut args = vec!["init".to_owned(), "-g".to_owned()];
+    for tool in ai_tools {
+        args.extend(tool.cli_flags());
+    }
+    rtk_step(title, CommandSpec::new("rtk", args))
 }
 
-fn step<const N: usize>(title: &str, program: &str, args: [&str; N]) -> PlanStep {
+fn uninit_step(title: &str, ai_tools: &[AiTool]) -> PlanStep {
+    let mut args = vec!["init".to_owned(), "-g".to_owned(), "--uninstall".to_owned()];
+    for tool in ai_tools {
+        args.extend(tool.cli_flags());
+    }
+    rtk_step(title, CommandSpec::new("rtk", args))
+}
+
+fn rtk_step(title: &str, command: CommandSpec) -> PlanStep {
+    PlanStep::new(ToolId::Rtk, title, command, rtk_paths())
+}
+
+fn shell_step(title: &str, script: &str) -> PlanStep {
     PlanStep::new(
         ToolId::Rtk,
         title,
-        CommandSpec::new(program, args),
-        RTK_PATHS.iter().map(|path| (*path).to_owned()).collect(),
+        CommandSpec::new("sh", ["-c", script]),
+        rtk_paths(),
     )
+}
+
+fn rtk_paths() -> Vec<String> {
+    RTK_PATHS
+        .iter()
+        .map(|path| (*path).to_owned())
+        .collect()
 }

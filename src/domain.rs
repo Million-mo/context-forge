@@ -1,5 +1,18 @@
 use std::collections::HashSet;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Action {
+    Install,
+    Uninstall,
+    Upgrade,
+}
+
+impl Default for Action {
+    fn default() -> Self {
+        Action::Install
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub enum ToolId {
     Rtk,
@@ -15,35 +28,84 @@ impl ToolId {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Action {
-    Recommended,
-    Install,
-    Uninstall,
-    Upgrade,
-    Repair,
-    Verify,
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub enum AiTool {
+    Claude,
+    Cursor,
+    Windsurf,
+    Cline,
+    KiloCode,
+    Antigravity,
+    Hermes,
+    OpenCode,
+    Gemini,
+    Codex,
+    Copilot,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ExecutionMode {
-    Apply,
-    Preview,
+impl AiTool {
+    pub fn label(self) -> &'static str {
+        match self {
+            AiTool::Claude => "Claude Code",
+            AiTool::Cursor => "Cursor",
+            AiTool::Windsurf => "Windsurf",
+            AiTool::Cline => "Cline / Roo Code",
+            AiTool::KiloCode => "Kilo Code",
+            AiTool::Antigravity => "Google Antigravity",
+            AiTool::Hermes => "Hermes CLI",
+            AiTool::OpenCode => "OpenCode",
+            AiTool::Gemini => "Gemini CLI",
+            AiTool::Codex => "Codex (OpenAI)",
+            AiTool::Copilot => "GitHub Copilot",
+        }
+    }
+
+    pub fn cli_flags(self) -> Vec<String> {
+        match self {
+            AiTool::Claude => vec![],
+            AiTool::Cursor => vec!["--agent".into(), "cursor".into()],
+            AiTool::Windsurf => vec!["--agent".into(), "windsurf".into()],
+            AiTool::Cline => vec!["--agent".into(), "cline".into()],
+            AiTool::KiloCode => vec!["--agent".into(), "kilocode".into()],
+            AiTool::Antigravity => vec!["--agent".into(), "antigravity".into()],
+            AiTool::Hermes => vec!["--agent".into(), "hermes".into()],
+            AiTool::OpenCode => vec!["--opencode".into()],
+            AiTool::Gemini => vec!["--gemini".into()],
+            AiTool::Codex => vec!["--codex".into()],
+            AiTool::Copilot => vec!["--copilot".into()],
+        }
+    }
+}
+
+pub fn selectable_ai_tools() -> Vec<AiTool> {
+    vec![
+        AiTool::Claude,
+        AiTool::Cursor,
+        AiTool::Windsurf,
+        AiTool::Cline,
+        AiTool::KiloCode,
+        AiTool::Antigravity,
+        AiTool::Hermes,
+        AiTool::OpenCode,
+        AiTool::Gemini,
+        AiTool::Codex,
+        AiTool::Copilot,
+    ]
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ToolSelection {
-    pub tools: Vec<ToolId>,
     pub action: Action,
-    pub mode: ExecutionMode,
+    pub tool: ToolId,
+    pub ai_tools: Vec<AiTool>,
 }
 
 impl Default for ToolSelection {
     fn default() -> Self {
         Self {
-            tools: vec![ToolId::Rtk, ToolId::Caveman],
-            action: Action::Recommended,
-            mode: ExecutionMode::Apply,
+            action: Action::default(),
+            tool: ToolId::Rtk,
+            ai_tools: vec![AiTool::Claude],
         }
     }
 }
@@ -82,6 +144,7 @@ pub struct PlanStep {
     pub command: CommandSpec,
     pub touched_paths: Vec<String>,
     pub state: StepState,
+    pub continue_on_failure: bool,
 }
 
 impl PlanStep {
@@ -97,7 +160,13 @@ impl PlanStep {
             command,
             touched_paths,
             state: StepState::Pending,
+            continue_on_failure: false,
         }
+    }
+
+    pub fn with_continue_on_failure(mut self) -> Self {
+        self.continue_on_failure = true;
+        self
     }
 }
 
@@ -148,10 +217,13 @@ pub struct ScanReport {
     pub brew_available: bool,
     pub cargo_available: bool,
     pub rtk_present: bool,
+    pub rtk_version: Option<String>,
     pub rtk_gain_ok: bool,
     pub rtk_init_show_ok: bool,
+    pub rtk_installed_ai_tools: Vec<AiTool>,
     pub node_major: Option<u32>,
     pub npx_available: bool,
+    pub caveman_version: Option<String>,
     pub caveman_local_repo: Option<String>,
 }
 
@@ -182,6 +254,11 @@ impl ScanReportBuilder {
         self
     }
 
+    pub fn rtk_version(mut self, value: Option<&str>) -> Self {
+        self.report.rtk_version = value.map(str::to_owned);
+        self
+    }
+
     pub fn rtk_gain_ok(mut self, value: bool) -> Self {
         self.report.rtk_gain_ok = value;
         self
@@ -192,6 +269,11 @@ impl ScanReportBuilder {
         self
     }
 
+    pub fn rtk_installed_ai_tools(mut self, value: Vec<AiTool>) -> Self {
+        self.report.rtk_installed_ai_tools = value;
+        self
+    }
+
     pub fn node_major(mut self, value: Option<u32>) -> Self {
         self.report.node_major = value;
         self
@@ -199,6 +281,11 @@ impl ScanReportBuilder {
 
     pub fn npx_available(mut self, value: bool) -> Self {
         self.report.npx_available = value;
+        self
+    }
+
+    pub fn caveman_version(mut self, value: Option<&str>) -> Self {
+        self.report.caveman_version = value.map(str::to_owned);
         self
     }
 

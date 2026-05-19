@@ -1,4 +1,4 @@
-use crate::domain::{Action, CommandSpec, PlanStep, ScanReport, ToolId};
+use crate::domain::{AiTool, CommandSpec, PlanStep, ScanReport, ToolId};
 
 const CAVEMAN_PATHS: &[&str] = &[
     "~/.claude/settings.json",
@@ -8,29 +8,42 @@ const CAVEMAN_PATHS: &[&str] = &[
     "~/.openclaw/workspace/",
 ];
 
-pub fn plan(action: Action, scan: &ScanReport) -> Vec<PlanStep> {
+pub fn install_plan(scan: &ScanReport) -> Vec<PlanStep> {
     if !node_ready(scan) {
         return vec![step("Check Node.js requirement", "node", ["--version"])];
     }
 
-    match action {
-        Action::Uninstall => vec![installer_step("Uninstall Caveman", scan, ["--uninstall"])],
-        Action::Upgrade => vec![
-            installer_step("Upgrade Caveman", scan, ["--all", "--force"]),
-            list_step(scan),
-        ],
-        Action::Repair => vec![
-            installer_step("Repair Caveman", scan, ["--all", "--force"]),
-            list_step(scan),
-        ],
-        Action::Verify => vec![list_step(scan)],
-        Action::Install | Action::Recommended => {
-            vec![
-                installer_step("Install Caveman", scan, ["--all"]),
-                list_step(scan),
-            ]
-        }
+    vec![
+        installer_step("Install Caveman", scan, ["--all"]),
+        list_step(scan),
+    ]
+}
+
+pub fn uninstall_plan(scan: &ScanReport, _ai_tools: &[AiTool]) -> Vec<PlanStep> {
+    if !node_ready(scan) {
+        return vec![step("Check Node.js requirement", "node", ["--version"])];
     }
+
+    vec![
+        installer_step("Uninstall Caveman", scan, ["--uninstall"]),
+        step("Remove caveman-active flag", "rm", ["-f", "~/.claude/.caveman-active"])
+            .with_continue_on_failure(),
+        step("Remove opencode config", "rm", ["-rf", "~/.config/opencode/"])
+            .with_continue_on_failure(),
+        step("Remove openclaw workspace", "rm", ["-rf", "~/.openclaw/workspace/"])
+            .with_continue_on_failure(),
+    ]
+}
+
+pub fn upgrade_plan(scan: &ScanReport) -> Vec<PlanStep> {
+    if !node_ready(scan) {
+        return vec![step("Check Node.js requirement", "node", ["--version"])];
+    }
+
+    vec![
+        installer_step("Upgrade Caveman", scan, ["--all"]),
+        list_step(scan),
+    ]
 }
 
 fn node_ready(scan: &ScanReport) -> bool {

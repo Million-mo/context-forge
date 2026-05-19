@@ -23,6 +23,7 @@ fn write_session_log_records_commands_and_outputs() {
             command: CommandSpec::new("rtk", ["init", "-g"]),
             touched_paths: vec!["~/.claude/settings.json".into()],
             state: StepState::Failed { code: Some(2) },
+            continue_on_failure: false,
         }],
         outputs: vec![StepOutput {
             command: "rtk init -g".into(),

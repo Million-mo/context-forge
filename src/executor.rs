@@ -1,22 +1,7 @@
-use crate::domain::{ExecutionMode, ExecutionResult, Plan, StepOutput, StepState};
+use crate::domain::{ExecutionResult, Plan, StepOutput, StepState};
 use crate::runner::CommandRunner;
 
-pub async fn execute_plan(
-    mut plan: Plan,
-    mode: ExecutionMode,
-    runner: &dyn CommandRunner,
-) -> ExecutionResult {
-    if mode == ExecutionMode::Preview {
-        for step in &mut plan.steps {
-            step.state = StepState::Skipped;
-        }
-        return ExecutionResult {
-            success: true,
-            steps: plan.steps,
-            outputs: Vec::new(),
-        };
-    }
-
+pub async fn execute_plan(mut plan: Plan, runner: &dyn CommandRunner) -> ExecutionResult {
     let mut outputs = Vec::new();
     let mut success = true;
 
@@ -36,8 +21,10 @@ pub async fn execute_plan(
             step.state = StepState::Failed {
                 code: Some(output.code),
             };
-            success = false;
-            break;
+            if !step.continue_on_failure {
+                success = false;
+                break;
+            }
         }
     }
 

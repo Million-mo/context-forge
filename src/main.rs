@@ -19,8 +19,6 @@ fn print_help() {
            - Caveman\n\n\
          Shortcuts:\n\
            Enter  continue or execute\n\
-           D      预演模式 / dry-run\n\
-           E      expand command details\n\
            Esc    back\n\
            q      quit\n"
     );
