@@ -10,6 +10,7 @@ fn help_mentions_supported_tools_and_core_shortcuts() {
         .success()
         .stdout(predicates::str::contains("RTK"))
         .stdout(predicates::str::contains("Caveman"))
+        .stdout(predicates::str::contains("init"))
         .stdout(predicates::str::contains("Enter"))
         .stdout(predicates::str::contains("q"))
         .stdout(predicates::str::contains("预演模式").not())

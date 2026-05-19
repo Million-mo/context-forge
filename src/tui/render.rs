@@ -13,34 +13,24 @@ pub fn render(frame: &mut Frame<'_>, app: &AppState) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(4),
-            Constraint::Min(8),
-            Constraint::Length(2),
+            Constraint::Length(1),
+            Constraint::Min(4),
+            Constraint::Length(1),
         ])
         .split(area);
 
-    let header = Paragraph::new(vec![
-        Line::from(vec![
-            Span::styled(
-                "Context Forge",
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("  RTK + Caveman Manager"),
-        ]),
-        Line::from(Span::styled(
-            "A lightweight installer for RTK and Caveman",
-            Style::default().fg(Color::DarkGray),
-        )),
-    ]);
+    let header = Paragraph::new(Line::from(vec![
+        Span::styled("context-forge", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        Span::raw(" · "),
+        Span::styled(app.selection.tool.label(), Style::default().fg(Color::Yellow)),
+    ]));
     frame.render_widget(header, chunks[0]);
 
     match app.page {
         AppPage::PluginSelection => render_plugin_selection(frame, app, chunks[1]),
         AppPage::ActionSelection => render_action_selection(frame, app, chunks[1]),
         AppPage::AIToolSelection => render_ai_tool_selection(frame, app, chunks[1]),
-        AppPage::Scanning => render_message(frame, "Scanning selected tools...", chunks[1]),
+        AppPage::Scanning => render_message(frame, "Scanning...", chunks[1]),
         AppPage::PlanSummary => render_plan_summary(frame, app, chunks[1]),
         AppPage::Executing => render_executing(frame, app, chunks[1]),
         AppPage::Results => render_results(frame, app, chunks[1]),
@@ -51,8 +41,8 @@ pub fn render(frame: &mut Frame<'_>, app: &AppState) {
 }
 
 pub fn app_area(area: Rect) -> Rect {
-    let width = area.width.min(88);
-    let height = area.height.min(18);
+    let width = area.width.min(72);
+    let height = area.height.min(20);
     let x = area.x + area.width.saturating_sub(width) / 2;
     let y = area.y + area.height.saturating_sub(height) / 2;
 
@@ -66,47 +56,26 @@ fn render_plugin_selection(frame: &mut Frame<'_>, app: &AppState, area: Rect) {
         .map(|(index, plugin)| {
             let selected = app.selection.tool == *plugin;
             let marker = if selected { "◉" } else { "○" };
-            let cursor = if index == app.highlighted_plugin_index {
-                "›"
-            } else {
-                " "
-            };
+            let cursor = if index == app.highlighted_plugin_index { "›" } else { " " };
             let style = if index == app.highlighted_plugin_index {
                 Style::default().fg(Color::Cyan)
             } else {
-                Style::default()
+                Style::default().fg(Color::DarkGray)
             };
             ListItem::new(Line::from(vec![
-                Span::styled(cursor, Style::default().fg(Color::Cyan)),
-                Span::raw(" "),
-                Span::styled(
-                    marker,
-                    Style::default().fg(if selected {
-                        Color::Green
-                    } else {
-                        Color::DarkGray
-                    }),
-                ),
+                Span::styled(format!("{cursor} {marker}"), style),
                 Span::raw(" "),
                 Span::styled(plugin.label(), style),
             ]))
         })
         .collect();
 
-    let title = Paragraph::new(Line::from(vec![
-        Span::styled(
-            "Select plugin",
-            Style::default().add_modifier(Modifier::BOLD),
-        ),
-    ]));
     let inner = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(2), Constraint::Min(4)])
+        .constraints([Constraint::Length(1), Constraint::Min(2)])
         .split(area);
-    frame.render_widget(title, inner[0]);
-
-    let list = List::new(items);
-    frame.render_widget(list, inner[1]);
+    frame.render_widget(Paragraph::new("Select plugin:"), inner[0]);
+    frame.render_widget(List::new(items), inner[1]);
 }
 
 fn render_action_selection(frame: &mut Frame<'_>, app: &AppState, area: Rect) {
@@ -116,47 +85,27 @@ fn render_action_selection(frame: &mut Frame<'_>, app: &AppState, area: Rect) {
         .map(|(index, action)| {
             let selected = app.selection.action == *action;
             let marker = if selected { "◉" } else { "○" };
-            let cursor = if index == app.highlighted_action_index {
-                "›"
-            } else {
-                " "
-            };
+            let cursor = if index == app.highlighted_action_index { "›" } else { " " };
             let style = if index == app.highlighted_action_index {
                 Style::default().fg(Color::Cyan)
             } else {
-                Style::default()
+                Style::default().fg(Color::DarkGray)
             };
             ListItem::new(Line::from(vec![
-                Span::styled(cursor, Style::default().fg(Color::Cyan)),
-                Span::raw(" "),
-                Span::styled(
-                    marker,
-                    Style::default().fg(if selected {
-                        Color::Green
-                    } else {
-                        Color::DarkGray
-                    }),
-                ),
+                Span::styled(format!("{cursor} {marker}"), style),
                 Span::raw(" "),
                 Span::styled(action.label(), style),
             ]))
         })
         .collect();
 
-    let title = Paragraph::new(Line::from(vec![
-        Span::styled(
-            format!("{} — choose action", app.selection.tool.label()),
-            Style::default().add_modifier(Modifier::BOLD),
-        ),
-    ]));
+    let title = format!("{} — choose action:", app.selection.tool.label());
     let inner = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(2), Constraint::Min(4)])
+        .constraints([Constraint::Length(1), Constraint::Min(3)])
         .split(area);
-    frame.render_widget(title, inner[0]);
-
-    let list = List::new(items);
-    frame.render_widget(list, inner[1]);
+    frame.render_widget(Paragraph::new(title), inner[0]);
+    frame.render_widget(List::new(items), inner[1]);
 }
 
 fn render_ai_tool_selection(frame: &mut Frame<'_>, app: &AppState, area: Rect) {
@@ -174,58 +123,33 @@ fn render_ai_tool_selection(frame: &mut Frame<'_>, app: &AppState, area: Rect) {
             let selected = app.selection.ai_tools.contains(tool);
             let already_installed = installed.contains(tool);
             let marker = if selected { "◉" } else { "○" };
-            let cursor = if index == app.highlighted_ai_tool_index {
-                "›"
-            } else {
-                " "
-            };
+            let cursor = if index == app.highlighted_ai_tool_index { "›" } else { " " };
             let style = if index == app.highlighted_ai_tool_index {
                 Style::default().fg(Color::Cyan)
             } else {
-                Style::default()
+                Style::default().fg(Color::DarkGray)
             };
 
             let mut spans = vec![
-                Span::styled(cursor, Style::default().fg(Color::Cyan)),
-                Span::raw(" "),
-                Span::styled(
-                    marker,
-                    Style::default().fg(if selected {
-                        Color::Green
-                    } else {
-                        Color::DarkGray
-                    }),
-                ),
+                Span::styled(format!("{cursor} {marker}"), style),
                 Span::raw(" "),
                 Span::styled(tool.label(), style),
             ];
 
             if already_installed {
-                spans.push(Span::raw(" "));
-                spans.push(Span::styled(
-                    "[installed]",
-                    Style::default().fg(Color::Yellow),
-                ));
+                spans.push(Span::styled(" (installed)", Style::default().fg(Color::DarkGray)));
             }
 
             ListItem::new(Line::from(spans))
         })
         .collect();
 
-    let title = Paragraph::new(Line::from(vec![
-        Span::styled(
-            "Select AI tools for RTK integration",
-            Style::default().add_modifier(Modifier::BOLD),
-        ),
-    ]));
     let inner = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(2), Constraint::Min(4)])
+        .constraints([Constraint::Length(1), Constraint::Min(4)])
         .split(area);
-    frame.render_widget(title, inner[0]);
-
-    let list = List::new(items);
-    frame.render_widget(list, inner[1]);
+    frame.render_widget(Paragraph::new("Select AI tools:"), inner[0]);
+    frame.render_widget(List::new(items), inner[1]);
 }
 
 fn render_message(frame: &mut Frame<'_>, message: &str, area: Rect) {
@@ -233,11 +157,7 @@ fn render_message(frame: &mut Frame<'_>, message: &str, area: Rect) {
 }
 
 fn render_executing(frame: &mut Frame<'_>, app: &AppState, area: Rect) {
-    let mut lines = vec![
-        Line::from("Running external commands..."),
-        Line::from("please wait. Long installs can take a minute or two."),
-        Line::from(""),
-    ];
+    let mut lines: Vec<Line<'_>> = Vec::new();
 
     if let Some(plan) = &app.plan {
         for step in &plan.steps {
@@ -248,24 +168,29 @@ fn render_executing(frame: &mut Frame<'_>, app: &AppState, area: Rect) {
                 StepState::Skipped => "-",
                 StepState::Failed { .. } => "×",
             };
-            lines.push(Line::from(format!(
-                "{icon} {} {}",
-                step.tool.label(),
-                step.title
-            )));
-            if step.state == StepState::Running {
-                lines.push(Line::from(format!("  {}", step.command.display())));
-            }
+            let style = match step.state {
+                StepState::Running => Style::default().fg(Color::Cyan),
+                StepState::Succeeded => Style::default().fg(Color::Green),
+                StepState::Failed { .. } => Style::default().fg(Color::Red),
+                _ => Style::default().fg(Color::DarkGray),
+            };
+            lines.push(Line::from(vec![
+                Span::styled(icon, style),
+                Span::raw(" "),
+                Span::styled(&step.title as &str, style),
+            ]));
         }
     }
 
-    // Show live output lines from the running command
+    // Live output tail
     let tail_lines: Vec<String> = app.live_tail.drain();
     if !tail_lines.is_empty() {
         lines.push(Line::from(""));
-        lines.push(Line::from("── output ──────────────────────────────"));
-        for line in tail_lines.iter().rev().take(20) {
-            lines.push(Line::from(format!("  {line}")));
+        for line in tail_lines.iter().rev().take(15) {
+            lines.push(Line::from(Span::styled(
+                format!("  {line}"),
+                Style::default().fg(Color::DarkGray),
+            )));
         }
     }
 
@@ -275,22 +200,24 @@ fn render_executing(frame: &mut Frame<'_>, app: &AppState, area: Rect) {
 fn render_plan_summary(frame: &mut Frame<'_>, app: &AppState, area: Rect) {
     let mut lines = Vec::new();
     if let Some(plan) = &app.plan {
-        lines.push(Line::from(format!(
-            "Ready to install: {} installation steps",
-            plan.steps.len()
-        )));
-        lines.push(Line::from(""));
+        lines.push(Line::from(format!("{} steps:", plan.steps.len())));
         for (index, step) in plan.steps.iter().enumerate() {
             lines.push(Line::from(format!(
-                "{}. {} {}",
+                "  {}. {} {}",
                 index + 1,
                 step.tool.label(),
                 step.title
             )));
-            lines.push(Line::from(format!("   {}", step.command.display())));
+            lines.push(Line::from(Span::styled(
+                format!("     {}", step.command.display()),
+                Style::default().fg(Color::DarkGray),
+            )));
         }
         lines.push(Line::from(""));
-        lines.push(Line::from(path_summary(plan.touched_paths())));
+        lines.push(Line::from(Span::styled(
+            path_summary(plan.touched_paths()),
+            Style::default().fg(Color::DarkGray),
+        )));
     } else {
         lines.push(Line::from("No plan built yet"));
     }
@@ -307,28 +234,35 @@ fn render_results(frame: &mut Frame<'_>, app: &AppState, area: Rect) {
             .filter(|step| step.state.is_terminal())
             .count();
         let heading = if result.success {
-            format!("Completed {completed}/{} steps", result.steps.len())
+            format!("Done. {completed}/{} steps", result.steps.len())
         } else {
-            format!("Failed after {completed}/{} steps", result.steps.len())
+            format!("Failed. {completed}/{} steps", result.steps.len())
         };
         lines.push(Line::from(heading));
         lines.push(Line::from(""));
 
         for (index, step) in result.steps.iter().enumerate() {
             let icon = match step.state {
-                StepState::Pending => "○",
-                StepState::Running => "↻",
                 StepState::Succeeded => "✓",
-                StepState::Skipped => "-",
                 StepState::Failed { .. } => "×",
+                StepState::Skipped => "-",
+                _ => "○",
             };
-            lines.push(Line::from(format!(
-                "{icon} {} {}",
-                step.tool.label(),
-                step.title
-            )));
+            let style = match step.state {
+                StepState::Succeeded => Style::default().fg(Color::Green),
+                StepState::Failed { .. } => Style::default().fg(Color::Red),
+                _ => Style::default().fg(Color::DarkGray),
+            };
+            lines.push(Line::from(vec![
+                Span::styled(icon, style),
+                Span::raw(" "),
+                Span::styled(&step.title as &str, style),
+            ]));
             if let Some(output) = result.outputs.get(index).and_then(output_summary) {
-                lines.push(Line::from(format!("  {output}")));
+                lines.push(Line::from(Span::styled(
+                    format!("   {output}"),
+                    Style::default().fg(Color::DarkGray),
+                )));
             }
         }
     } else {
@@ -348,58 +282,15 @@ pub fn render_to_text_for_test(app: &AppState, width: u16, height: u16) -> Strin
 }
 
 fn footer_line(page: AppPage) -> Line<'static> {
-    match page {
-        AppPage::PluginSelection => Line::from(vec![
-            Span::styled("↑↓", Style::default().fg(Color::Cyan)),
-            Span::raw(" navigate • "),
-            Span::styled("Enter", Style::default().fg(Color::Cyan)),
-            Span::raw(" select • "),
-            Span::styled("q", Style::default().fg(Color::Cyan)),
-            Span::raw(" quit"),
-        ]),
-        AppPage::ActionSelection => Line::from(vec![
-            Span::styled("↑↓", Style::default().fg(Color::Cyan)),
-            Span::raw(" navigate • "),
-            Span::styled("Space", Style::default().fg(Color::Cyan)),
-            Span::raw(" choose • "),
-            Span::styled("Enter", Style::default().fg(Color::Cyan)),
-            Span::raw(" continue • "),
-            Span::styled("Esc", Style::default().fg(Color::Cyan)),
-            Span::raw(" back • "),
-            Span::styled("q", Style::default().fg(Color::Cyan)),
-            Span::raw(" quit"),
-        ]),
-        AppPage::AIToolSelection => Line::from(vec![
-            Span::styled("↑↓", Style::default().fg(Color::Cyan)),
-            Span::raw(" navigate • "),
-            Span::styled("Space", Style::default().fg(Color::Cyan)),
-            Span::raw(" toggle • "),
-            Span::styled("Esc", Style::default().fg(Color::Cyan)),
-            Span::raw(" back • "),
-            Span::styled("Enter", Style::default().fg(Color::Cyan)),
-            Span::raw(" continue • "),
-            Span::styled("q", Style::default().fg(Color::Cyan)),
-            Span::raw(" quit"),
-        ]),
-        AppPage::PlanSummary => Line::from(vec![
-            Span::styled("Enter", Style::default().fg(Color::Cyan)),
-            Span::raw(" execute • "),
-            Span::styled("Esc", Style::default().fg(Color::Cyan)),
-            Span::raw(" back • "),
-            Span::styled("q", Style::default().fg(Color::Cyan)),
-            Span::raw(" quit"),
-        ]),
-        AppPage::Results => Line::from(vec![
-            Span::styled("Esc", Style::default().fg(Color::Cyan)),
-            Span::raw(" exit • "),
-            Span::styled("q", Style::default().fg(Color::Cyan)),
-            Span::raw(" quit"),
-        ]),
-        AppPage::Scanning | AppPage::Executing => Line::from(vec![
-            Span::styled("q", Style::default().fg(Color::Cyan)),
-            Span::raw(" quit"),
-        ]),
-    }
+    let keys = match page {
+        AppPage::PluginSelection => "↑↓ pick  Enter select  q quit",
+        AppPage::ActionSelection => "↑↓ pick  Space choose  Enter continue  Esc back  q quit",
+        AppPage::AIToolSelection => "↑↓ pick  Space toggle  Esc back  Enter continue  q quit",
+        AppPage::PlanSummary => "Enter execute  Esc back  q quit",
+        AppPage::Results => "Esc back  q quit",
+        AppPage::Scanning | AppPage::Executing => "q quit",
+    };
+    Line::from(Span::styled(keys, Style::default().fg(Color::DarkGray)))
 }
 
 fn path_summary(paths: Vec<&str>) -> String {

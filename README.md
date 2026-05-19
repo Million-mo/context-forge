@@ -1,24 +1,59 @@
 # Context Forge
 
-Context Forge is a macOS-first terminal installer for RTK and Caveman.
+macOS-first terminal installer for [RTK](https://github.com/rtk-ai/rtk) and [Caveman](https://github.com/JuliusBrussee/caveman).
 
-It starts fast, lets you choose tools first, scans only the selected environment, then runs the installation flow for those tools.
+Plugin-first design: pick a plugin, choose an action, run it. Each plugin owns its full lifecycle (install / uninstall / upgrade). RTK AI-tool integration is a natural sub-step, not a global setting.
 
-## First Version
-
-- Rust + Ratatui single binary.
-- RTK and Caveman built in.
-- OpenSpec-inspired lightweight CLI onboarding style.
-- Select tools, install them, and show installation results.
-
-## Run
+## Quick Start
 
 ```bash
 cargo run
+# or
+cargo run -- init
+# or install globally
+cargo install --path .
+context-forge init
 ```
 
-## Test
+## Flow
+
+```
+PluginSelection (RTK / Caveman)
+  → ActionSelection (Install / Uninstall / Upgrade)
+    → [RTK] AIToolSelection (pick AI tools: Claude, Cursor, etc.)
+    → Scanning → Plan Summary → Execute → Results
+```
+
+## Features
+
+- **Plugin-first**: pick RTK or Caveman first, then choose what to do
+- **Multi-method install**: cargo → brew → curl install script, with automatic fallback
+- **Observable steps**: each install method is a visible step with live output
+- **Uninstall cleans up properly**: `rtk init -g --uninstall` + binary removal + config cleanup
+- **RTK AI tool integration**: configure Claude Code, Cursor, Windsurf, Cline, and 7+ others
+
+## Commands
+
+```
+context-forge          Launch TUI (default)
+context-forge init     Same
+context-forge --help   Help
+```
+
+## TUI Shortcuts
+
+| Page | Keys |
+|------|------|
+| Plugin/Action selection | `↑↓` pick, `Space` toggle, `Enter` continue |
+| AI tool selection | `↑↓` pick, `Space` toggle, `Esc` back, `Enter` continue |
+| Plan summary | `Enter` execute, `Esc` back |
+| Results | `Esc` back to plugins |
+| Anywhere | `q` quit |
+
+## Development
 
 ```bash
-cargo test
+cargo run          # dev mode
+cargo test         # run tests
+cargo build --release  # release binary at target/release/context-forge
 ```
