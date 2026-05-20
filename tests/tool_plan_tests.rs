@@ -110,7 +110,6 @@ fn caveman_with_node_generates_all_install_and_list_verification() {
     let scan = ScanReport::builder()
         .node_major(Some(22))
         .npx_available(true)
-        .caveman_local_repo(None)
         .build();
 
     let plan = build_plan(&selection, &scan);

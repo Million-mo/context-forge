@@ -219,12 +219,11 @@ pub struct ScanReport {
     pub rtk_present: bool,
     pub rtk_version: Option<String>,
     pub rtk_gain_ok: bool,
+    pub rtk_gain_summary: Option<String>,
     pub rtk_init_show_ok: bool,
     pub rtk_installed_ai_tools: Vec<AiTool>,
     pub node_major: Option<u32>,
     pub npx_available: bool,
-    pub caveman_version: Option<String>,
-    pub caveman_local_repo: Option<String>,
 }
 
 impl ScanReport {
@@ -264,6 +263,11 @@ impl ScanReportBuilder {
         self
     }
 
+    pub fn rtk_gain_summary(mut self, value: Option<&str>) -> Self {
+        self.report.rtk_gain_summary = value.map(str::to_owned);
+        self
+    }
+
     pub fn rtk_init_show_ok(mut self, value: bool) -> Self {
         self.report.rtk_init_show_ok = value;
         self
@@ -281,16 +285,6 @@ impl ScanReportBuilder {
 
     pub fn npx_available(mut self, value: bool) -> Self {
         self.report.npx_available = value;
-        self
-    }
-
-    pub fn caveman_version(mut self, value: Option<&str>) -> Self {
-        self.report.caveman_version = value.map(str::to_owned);
-        self
-    }
-
-    pub fn caveman_local_repo(mut self, value: Option<&str>) -> Self {
-        self.report.caveman_local_repo = value.map(str::to_owned);
         self
     }
 

@@ -8,7 +8,20 @@ pub async fn scan_selected_tools(runner: &dyn CommandRunner, tools: &[ToolId]) -
 
     if tools.contains(&ToolId::Rtk) {
         let rtk_present = run_ok(runner, CommandSpec::new("which", ["rtk"])).await;
-        let rtk_gain_ok = rtk_present && run_ok(runner, CommandSpec::new("rtk", ["gain"])).await;
+
+        let (rtk_gain_ok, rtk_gain_summary) = if rtk_present {
+            let output = runner.run(&CommandSpec::new("rtk", ["gain"])).await;
+            let ok = output.succeeded();
+            let summary = if ok {
+                extract_gain_summary(&output.stdout)
+            } else {
+                None
+            };
+            (ok, summary)
+        } else {
+            (false, None)
+        };
+
         let rtk_init_show_ok =
             rtk_present && run_ok(runner, CommandSpec::new("rtk", ["init", "--show"])).await;
         let brew_available = run_ok(runner, CommandSpec::new("which", ["brew"])).await;
@@ -28,6 +41,7 @@ pub async fn scan_selected_tools(runner: &dyn CommandRunner, tools: &[ToolId]) -
             .rtk_present(rtk_present)
             .rtk_version(rtk_version.as_deref())
             .rtk_gain_ok(rtk_gain_ok)
+            .rtk_gain_summary(rtk_gain_summary.as_deref())
             .rtk_init_show_ok(rtk_init_show_ok)
             .brew_available(brew_available)
             .cargo_available(cargo_available)
@@ -43,20 +57,9 @@ pub async fn scan_selected_tools(runner: &dyn CommandRunner, tools: &[ToolId]) -
         };
         let npx_available = run_ok(runner, CommandSpec::new("which", ["npx"])).await;
 
-        let caveman_version = if npx_available {
-            let output = runner
-                .run(&CommandSpec::new("npx", ["-y", "github:JuliusBrussee/caveman", "--version"]))
-                .await;
-            let text = output.stdout.trim().to_owned();
-            if text.is_empty() { None } else { Some(text) }
-        } else {
-            None
-        };
-
         builder = builder
             .node_major(node_major)
-            .npx_available(npx_available)
-            .caveman_version(caveman_version.as_deref());
+            .npx_available(npx_available);
     }
 
     builder.build()
@@ -71,6 +74,29 @@ pub fn pre_scan_ai_tools() -> ScanReport {
     ScanReport::builder()
         .rtk_present(rtk_present)
         .rtk_installed_ai_tools(installed)
+        .build()
+}
+
+/// Startup scan: detects RTK presence and captures `rtk gain` summary
+/// so PluginSelection page can show token stats immediately.
+pub async fn startup_scan(runner: &dyn CommandRunner) -> ScanReport {
+    let home = dirs_home();
+    let rtk_present = find_rtk_binary(&home);
+
+    let rtk_gain_summary = if rtk_present {
+        let output = runner.run(&CommandSpec::new("rtk", ["gain"])).await;
+        if output.succeeded() {
+            extract_gain_summary(&output.stdout)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    ScanReport::builder()
+        .rtk_present(rtk_present)
+        .rtk_gain_summary(rtk_gain_summary.as_deref())
         .build()
 }
 
@@ -134,6 +160,17 @@ fn settings_json_has_rtk(home: &std::path::Path) -> bool {
         Ok(contents) => contents.contains("rtk hook"),
         Err(_) => false,
     }
+}
+
+/// Extract the top-line summary from `rtk gain` output:
+/// "Tokens saved: 7.4K (73.3%)"
+fn extract_gain_summary(stdout: &str) -> Option<String> {
+    for line in stdout.lines() {
+        if line.contains("Tokens saved:") {
+            return Some(line.trim().to_owned());
+        }
+    }
+    None
 }
 
 fn dirs_home() -> PathBuf {

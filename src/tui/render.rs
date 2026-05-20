@@ -70,12 +70,32 @@ fn render_plugin_selection(frame: &mut Frame<'_>, app: &AppState, area: Rect) {
         })
         .collect();
 
+    let has_gain = app
+        .scan
+        .as_ref()
+        .and_then(|s| s.rtk_gain_summary.as_ref())
+        .is_some();
+    let gain_height = if has_gain { 2 } else { 0 };
+
     let inner = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Min(2)])
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Min(2),
+            Constraint::Length(gain_height),
+        ])
         .split(area);
     frame.render_widget(Paragraph::new("Select plugin:"), inner[0]);
     frame.render_widget(List::new(items), inner[1]);
+
+    if let Some(scan) = &app.scan {
+        if let Some(ref summary) = scan.rtk_gain_summary {
+            frame.render_widget(
+                Paragraph::new(Span::styled(summary, Style::default().fg(Color::Yellow))),
+                inner[2],
+            );
+        }
+    }
 }
 
 fn render_action_selection(frame: &mut Frame<'_>, app: &AppState, area: Rect) {

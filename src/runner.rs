@@ -125,44 +125,52 @@ fn run_sync(program: &str, args: &[String], tail: Option<&LiveTail>) -> Output {
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
 
-    // Read stdout in a background thread, pushing lines to tail live
-    let stdout_handle: Option<std::thread::JoinHandle<String>> = stdout.map(|pipe| {
-        std::thread::spawn(move || {
-            let reader = BufReader::new(pipe);
-            let mut collected = String::new();
-            for line in reader.lines() {
-                match line {
-                    Ok(l) => {
-                        collected.push_str(&l);
-                        collected.push('\n');
-                    }
-                    Err(_) => break,
-                }
-            }
-            collected
-        })
-    });
-
-    let stderr_handle: Option<std::thread::JoinHandle<String>> = stderr.map(|pipe| {
+    // Read stdout + stderr in background threads, pushing all lines to tail live
+    let stdout_handle: Option<std::thread::JoinHandle<String>> = {
         let tail_clone = tail.cloned();
-        std::thread::spawn(move || {
-            let reader = BufReader::new(pipe);
-            let mut collected = String::new();
-            for line in reader.lines() {
-                match line {
-                    Ok(l) => {
-                        if let Some(ref t) = tail_clone {
-                            t.push(&l);
+        stdout.map(|pipe| {
+            std::thread::spawn(move || {
+                let reader = BufReader::new(pipe);
+                let mut collected = String::new();
+                for line in reader.lines() {
+                    match line {
+                        Ok(l) => {
+                            if let Some(ref t) = tail_clone {
+                                t.push(&l);
+                            }
+                            collected.push_str(&l);
+                            collected.push('\n');
                         }
-                        collected.push_str(&l);
-                        collected.push('\n');
+                        Err(_) => break,
                     }
-                    Err(_) => break,
                 }
-            }
-            collected
+                collected
+            })
         })
-    });
+    };
+
+    let stderr_handle: Option<std::thread::JoinHandle<String>> = {
+        let tail_clone = tail.cloned();
+        stderr.map(|pipe| {
+            std::thread::spawn(move || {
+                let reader = BufReader::new(pipe);
+                let mut collected = String::new();
+                for line in reader.lines() {
+                    match line {
+                        Ok(l) => {
+                            if let Some(ref t) = tail_clone {
+                                t.push(&l);
+                            }
+                            collected.push_str(&l);
+                            collected.push('\n');
+                        }
+                        Err(_) => break,
+                    }
+                }
+                collected
+            })
+        })
+    };
 
     let status = child.wait();
     let code = status.map(|s| s.code().unwrap_or(1)).unwrap_or(1);

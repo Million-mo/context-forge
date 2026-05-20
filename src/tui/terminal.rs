@@ -32,6 +32,7 @@ pub fn run_terminal_app() -> anyhow::Result<()> {
 
 async fn run_loop<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>) -> anyhow::Result<()> {
     let mut app = AppState::new();
+    app.scan = Some(scanner::startup_scan(&crate::runner::RealCommandRunner).await);
 
     loop {
         terminal.draw(|frame| render(frame, &app))?;
