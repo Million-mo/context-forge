@@ -8,4 +8,3 @@
  */
 
 export { CtxPlugin, default as ctxPlugin } from "./plugin.js"
-export { CtxToolsPlugin, default as tools } from "./tools.js"

@@ -4,8 +4,7 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./rtk": "./src/rtk.ts",
-    "./tools": "./src/tools.ts"
+    "./rtk": "./src/rtk.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"

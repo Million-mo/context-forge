@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+
+# TypeScript compiled output
+dist/
+
+# IDE / editor
+.deepseek/
+.vscode/
+.idea/
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+npm-debug.log*
+
+# Misc tool caches
+target/
