@@ -1,103 +1,49 @@
 #!/usr/bin/env node
 /**
- * ctx_plugin install script
+ * ctx_plugin — unified install dispatcher
  *
- * Installs the RTK plugin into OpenCode's config directory:
- *   src/rtk.ts  →  ~/.config/opencode/plugins/rtk.ts
+ * Calls install-rtk.js and/or install-caveman.js based on flags.
  *
- * Usage: node bin/install.js
+ * Usage:
+ *   node bin/install.js              — install both RTK + Caveman
+ *   node bin/install.js --rtk       — RTK only
+ *   node bin/install.js --caveman   — Caveman only
+ *   node bin/install.js --all        — both (same as no flag)
+ *   node bin/install.js --force      — pass --force to sub-installers
  */
 
-import {
-  copyFileSync,
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  writeFileSync,
-} from "node:fs"
+import { spawnSync } from "node:child_process"
+import { existsSync } from "node:fs"
 import { join, dirname } from "node:path"
 import { fileURLToPath } from "node:url"
-import os from "node:os"
-import { execSync } from "node:child_process"
 
 const __filename = fileURLToPath(import.meta.url)
-const ROOT = join(dirname(__filename), "..")
+const BIN = join(dirname(__filename))
 
-// ── helpers ──────────────────────────────────────────────────────────
-
-function opencodeDir() {
-  if (process.env.OPENCODE_CONFIG_DIR) return process.env.OPENCODE_CONFIG_DIR
-  if (process.env.XDG_CONFIG_HOME) return join(process.env.XDG_CONFIG_HOME, "opencode")
-  if (process.platform === "win32") {
-    return join(
-      process.env.APPDATA ?? join(os.homedir(), "AppData", "Roaming"),
-      "opencode",
-    )
-  }
-  return join(os.homedir(), ".config", "opencode")
-}
-
-function readJson(path) {
-  const raw = readFileSync(path, "utf8")
-  const cleaned = raw.replace(/\/\/[^\n]*/g, "")
-  try {
-    return JSON.parse(cleaned)
-  } catch {
-    return {}
-  }
-}
-
-function writeJson(path, obj) {
-  writeFileSync(path, JSON.stringify(obj, null, 2) + "\n")
-}
-
-function rtkAvailable() {
-  try {
-    execSync("which rtk", { stdio: "ignore" })
-    return true
-  } catch {
+function run(name, args) {
+  const path = join(BIN, name)
+  if (!existsSync(path)) {
+    console.error(`  ✗ ${name} not found`)
     return false
   }
+  const result = spawnSync("node", [path, ...args], { stdio: "inherit" })
+  return result.status === 0
 }
 
-// ── main ─────────────────────────────────────────────────────────────
+const FORCE = process.argv.includes("--force") ? ["--force"] : []
 
-const OC_DIR = opencodeDir()
-console.log(`\nctx_plugin install → ${OC_DIR}\n`)
+const installRtk     = process.argv.includes("--rtk")
+const installCaveman = process.argv.includes("--caveman")
+const installAll     = !installRtk && !installCaveman
 
-// 1. Copy RTK plugin
-const RTK_SRC = join(ROOT, "src", "rtk.ts")
-const PLUGINS_DST = join(OC_DIR, "plugins")
-mkdirSync(PLUGINS_DST, { recursive: true })
-try {
-  copyFileSync(RTK_SRC, join(PLUGINS_DST, "rtk.ts"))
-  console.log(`  ✓ rtk.ts  →  ${PLUGINS_DST}/rtk.ts`)
-} catch (e) {
-  console.error(`  ✗ rtk.ts: ${e.message}`)
-  process.exit(1)
+let ok = true
+
+if (installAll || installRtk) {
+  ok = run("install-rtk.js", FORCE) && ok
 }
 
-// 2. Ensure opencode.json exists and is clean
-const OC_JSON = join(OC_DIR, "opencode.json")
-if (existsSync(OC_JSON)) {
-  const cfg = readJson(OC_JSON)
-  let changed = false
-  if (cfg.permission) {
-    if (cfg.permission.fibonacci) { delete cfg.permission.fibonacci; changed = true }
-    if (Object.keys(cfg.permission).length === 0) delete cfg.permission
-  }
-  if (changed) {
-    writeJson(OC_JSON, cfg)
-    console.log("  ✓ pruned stale opencode.json entries")
-  }
-} else {
-  writeJson(OC_JSON, {})
-  console.log("  ✓ created opencode.json")
+if (installAll || installCaveman) {
+  ok = run("install-caveman.js", FORCE) && ok
 }
 
-// 3. Warn if rtk binary is missing
-if (!rtkAvailable()) {
-  console.warn("\n  ⚠  rtk not found on PATH — plugin will be inactive until rtk is installed\n")
-}
-
-console.log("\nDone. Restart opencode to activate ctx_plugin.\n")
+if (!ok) process.exit(1)

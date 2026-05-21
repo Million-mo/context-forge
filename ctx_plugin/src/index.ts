@@ -1,9 +1,13 @@
 /**
- * Barrel export — OpenCode loads local plugins from auto-scanned dirs:
+ * Barrel export — ctx_plugin provides unified RTK + Caveman plugin
  *
- *   .opencode/plugins/rtk.ts  ← RTK command rewrite plugin
+ * The main entry point is plugin.ts which combines:
+ *   - RTK: bash/shell command rewriting via `rtk rewrite`
+ *   - Caveman: ultra-compressed communication mode with session tracking
  *
  * opencode.json "plugin" array is for npm packages only, not local .ts paths.
+ * opencode auto-scans .opencode/plugins/ directory.
  */
 
-export { RtkOpenCodePlugin, default as ctxPlugin } from "./rtk.js"
+export { CtxPlugin, default as ctxPlugin } from "./plugin.js"
+export * from "./stats.js"

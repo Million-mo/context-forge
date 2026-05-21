@@ -1,0 +1,69 @@
+{
+  "version": 1,
+  "skills": {
+    "cavecrew": {
+      "source": "opencode-community/caveman",
+      "sourceType": "git",
+      "skillPath": "skills/cavecrew/SKILL.md",
+      "computedHash": "06d45a7308d8603365313decf400020106b985cb5ce500ee169bfba9c71dd147"
+    },
+    "caveman": {
+      "source": "opencode-community/caveman",
+      "sourceType": "git",
+      "skillPath": "skills/caveman/SKILL.md",
+      "computedHash": "b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef123456"
+    },
+    "caveman-commit": {
+      "source": "opencode-community/caveman",
+      "sourceType": "git",
+      "skillPath": "skills/caveman-commit/SKILL.md",
+      "computedHash": "c3d4e5f67890123456789012345678901bcdef01234567890abcdef0123456"
+    },
+    "caveman-review": {
+      "source": "opencode-community/caveman",
+      "sourceType": "git",
+      "skillPath": "skills/caveman-review/SKILL.md",
+      "computedHash": "d4e5f678901234567890123456789012cdef0123456789012bcdef01234567"
+    },
+    "caveman-compress": {
+      "source": "opencode-community/caveman",
+      "sourceType": "git",
+      "skillPath": "skills/caveman-compress/SKILL.md",
+      "computedHash": "e5f6789012345678901234567890123def01234567890123cdef012345678"
+    },
+    "caveman-help": {
+      "source": "opencode-community/caveman",
+      "sourceType": "git",
+      "skillPath": "skills/caveman-help/SKILL.md",
+      "computedHash": "f67890123456789012345678901234ef012345678901234def0123456789"
+    },
+    "caveman-stats": {
+      "source": "opencode-community/caveman",
+      "sourceType": "git",
+      "skillPath": "skills/caveman-stats/SKILL.md",
+      "computedHash": "078901234567890123456789012345f0123456789012345ef01234567890"
+    }
+  },
+  "agents": {
+    "cavecrew-investigator": {
+      "source": "opencode-community/caveman",
+      "sourceType": "git",
+      "agentPath": "agents/cavecrew-investigator.md"
+    },
+    "cavecrew-builder": {
+      "source": "opencode-community/caveman",
+      "sourceType": "git",
+      "agentPath": "agents/cavecrew-builder.md"
+    },
+    "cavecrew-reviewer": {
+      "source": "opencode-community/caveman",
+      "sourceType": "git",
+      "agentPath": "agents/cavecrew-reviewer.md"
+    }
+  },
+  "upstream": {
+    "repo": "opencode-community/caveman",
+    "lastSynced": "2026-05-21",
+    "syncMethod": "manual"
+  }
+}
