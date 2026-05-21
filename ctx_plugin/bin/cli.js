@@ -79,8 +79,8 @@ switch (cmd) {
     console.log()
     break
   }
-  case "stats": {
-    run("stats.js", args)
+  case "gain": {
+    run("gain.js", args)
     break
   }
   default: {
@@ -92,7 +92,7 @@ switch (cmd) {
       "  ctx_plugin install [--rtk|--caveman|--all] [--force]",
       "  ctx_plugin uninstall [--rtk|--caveman|--all]",
       "  ctx_plugin doctor",
-      "  ctx_plugin stats [--all|--since <N>[h|d]] [--share]",
+      "  ctx_plugin gain [--all|--since Nd|--today] [--project <name>] [--share]",
       "",
       "Targets:",
       "  --all      install/remove both (default)",
@@ -105,9 +105,10 @@ switch (cmd) {
       "  ctx_plugin install --caveman   # Caveman only",
       "  ctx_plugin uninstall --rtk     # remove RTK, keep Caveman",
       "  ctx_plugin doctor              # show install status",
-      "  ctx_plugin stats               # show all-time caveman savings",
-      "  ctx_plugin stats --since 7d    # last 7 days",
-      "  ctx_plugin stats --share       # one-line summary",
+      "  ctx_plugin gain                # RTK token savings report",
+      "  ctx_plugin gain --today       # today's commands (detailed log)",
+      "  ctx_plugin gain --since 7     # last 7 days",
+      "  ctx_plugin gain --share       # one-line summary",
       "",
     ].join("\n"))
   }
