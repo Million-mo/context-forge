@@ -13,7 +13,6 @@ permission:
   grep: allow
   bash: deny
   todowrite: deny
-model: anthropic/claude-haiku-4-20250514
 ---
 
 Caveman-ultra. Drop articles/filler. Code/paths exact, backticked. No narration.

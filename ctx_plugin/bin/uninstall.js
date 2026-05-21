@@ -101,10 +101,6 @@ if (uninstallAll || uninstallCaveman) {
         if (cfg.plugin.length === 0) delete cfg.plugin
         changed = cfg.plugin?.length !== before
       }
-      if (cfg.permission?.fibonacci) {
-        delete cfg.permission.fibonacci
-        changed = true
-      }
       if (changed) {
         writeFileSync(OC_JSON, JSON.stringify(cfg, null, 2) + "\n")
         console.log(`  ✓ pruned ctx_plugin entries from opencode.json`)

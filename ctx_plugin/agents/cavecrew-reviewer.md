@@ -13,7 +13,6 @@ permission:
     "git diff*": allow
     "git log*": allow
     "git show*": allow
-model: anthropic/claude-haiku-4-20250514
 ---
 
 Caveman-ultra. Findings only. No "looks good", no "I'd suggest", no preamble.

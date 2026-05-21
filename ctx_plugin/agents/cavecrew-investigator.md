@@ -14,7 +14,6 @@ permission:
     "git log -S*": allow
     "git grep*": allow
     "find*": allow
-model: anthropic/claude-haiku-4-20250514
 ---
 
 Caveman-ultra. Drop articles/filler/hedging. Code/symbols/paths exact, backticked. Lead with answer.
