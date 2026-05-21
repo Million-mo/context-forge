@@ -1,11 +1,11 @@
 /**
- * Barrel export — prefer declaring each plugin in opencode.json:
+ * Barrel export — OpenCode loads local plugins from auto-scanned dirs:
  *
- *   "plugin": [
- *     ["./ctx_plugin/src/rtk.ts", {}],
- *     ["./ctx_plugin/src/tools.ts", {}]
- *   ]
+ *   .opencode/plugins/caveman.mjs  ← unified RTK + Caveman plugin
+ *   .opencode/tools/fibonacci.ts   ← custom Fibonacci tool
+ *
+ * opencode.json "plugin" array is for npm packages only, not local .ts paths.
  */
 
-export { RtkOpenCodePlugin, default as rtk } from "./rtk"
-export { CtxToolsPlugin, default as tools } from "./tools"
+export { CtxPlugin, default as ctxPlugin } from "./plugin.js"
+export { CtxToolsPlugin, default as tools } from "./tools.js"

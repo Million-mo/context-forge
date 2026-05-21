@@ -1,49 +1,46 @@
 import type { Plugin } from "@opencode-ai/plugin"
 import { tool } from "@opencode-ai/plugin"
-import { Effect } from "effect"
 
 // Plugin-style custom tools (requires `bun install` in ctx_plugin/).
-// Runtime entry used by OpenCode: .opencode/tools/dir_size.ts (auto-scanned).
-// Add more tools as separate files under .opencode/tools/<name>.ts
+// Runtime entry: .opencode/tools/<name>.ts (auto-scanned; filename = tool name)
 
 export const CtxToolsPlugin: Plugin = async () => {
   return {
     tool: {
-      dir_size: tool({
+      fibonacci: tool({
         description:
-          "Get total disk usage of the project directory (or a subdirectory). Uses `du -sh`.",
+          "Compute Fibonacci numbers. Returns F(0)..F(n) for n ≤ 50, or a single F(n) when only one value is needed.",
         args: {
-          subdir: tool.schema
-            .string()
+          n: tool.schema
+            .number()
+            .int()
+            .min(0)
+            .max(50)
+            .describe("Index n (0–50). F(0)=0, F(1)=1, F(n)=F(n-1)+F(n-2)."),
+          single: tool.schema
+            .boolean()
             .optional()
-            .describe(
-              "Optional subdirectory relative to project root. Defaults to '.' (entire project).",
-            ),
+            .describe("If true, return only F(n) instead of the full sequence up to n."),
         },
-        async execute(args, ctx) {
-          const target = args.subdir ?? "."
-          const fullPath =
-            target === "." ? ctx.directory : `${ctx.directory}/${target}`
+        async execute(args) {
+          const n = args.n
+          const seq: number[] = []
+          for (let i = 0; i <= n; i++) {
+            if (i === 0) seq.push(0)
+            else if (i === 1) seq.push(1)
+            else seq.push(seq[i - 1]! + seq[i - 2]!)
+          }
 
-          await Effect.runPromise(
-            ctx.ask({
-              permission: "dir_size",
-              patterns: [target],
-              always: [`du -sh ${target}*`],
-              metadata: { tool: "dir_size", path: fullPath },
-            }),
-          )
-
-          const { execSync } = await import("node:child_process")
-          const raw = execSync(`du -sh "${fullPath}" 2>/dev/null || echo "unknown"`, {
-            encoding: "utf-8",
-            timeout: 15000,
-          }).trim()
-          const size = raw.split(/\s+/)[0] || "unknown"
+          if (args.single) {
+            return {
+              output: `F(${n}) = ${seq[n]}`,
+              metadata: { n, value: seq[n] },
+            }
+          }
 
           return {
-            output: `Directory "${target}" total size: ${size}`,
-            metadata: { path: fullPath, size },
+            output: `F(0)..F(${n}): ${seq.join(", ")}`,
+            metadata: { n, sequence: seq },
           }
         },
       }),

@@ -1,6 +1,7 @@
 import type { Plugin } from "@opencode-ai/plugin"
 
 // RTK bash rewrite — same pattern as upstream hooks/opencode/rtk.ts
+// OpenCode loads from .opencode/plugins/rtk.ts (auto-scanned), NOT opencode.json.
 // @see https://github.com/rtk-ai/rtk/blob/develop/hooks/opencode/rtk.ts
 
 export const RtkOpenCodePlugin: Plugin = async ({ $ }) => {
