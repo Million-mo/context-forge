@@ -36,12 +36,6 @@
       "sourceType": "git",
       "skillPath": "skills/caveman-help/SKILL.md",
       "computedHash": "f67890123456789012345678901234ef012345678901234def0123456789"
-    },
-    "caveman-stats": {
-      "source": "opencode-community/caveman",
-      "sourceType": "git",
-      "skillPath": "skills/caveman-stats/SKILL.md",
-      "computedHash": "078901234567890123456789012345f0123456789012345ef01234567890"
     }
   },
   "agents": {

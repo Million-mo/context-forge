@@ -26,7 +26,6 @@ Modes:
 Skills:
   /caveman-commit       terse Conventional Commits
   /caveman-review       one-line PR comments
-  /caveman-stats        session token savings
 
 Deactivate:
   "stop caveman" or "normal mode"

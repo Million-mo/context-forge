@@ -10,4 +10,3 @@
  */
 
 export { CtxPlugin, default as ctxPlugin } from "./plugin.js"
-export * from "./stats.js"
