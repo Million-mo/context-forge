@@ -10,9 +10,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@opencode-ai/plugin": "latest",
-    "effect": "^3.0.0",
-    "zod": "^3.0.0"
+    "@opencode-ai/plugin": "latest"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

@@ -1,27 +1,26 @@
 #!/usr/bin/env node
 /**
- * ctx_plugin install script
+ * ctx_plugin uninstall script
  *
- * Installs the RTK plugin into OpenCode's config directory:
- *   src/rtk.ts  →  ~/.config/opencode/plugins/rtk.ts
+ * Removes the RTK plugin from OpenCode's config directory and
+ * cleans up any stale opencode.json entries left by ctx_plugin.
  *
- * Usage: node bin/install.js
+ * Usage: node bin/uninstall.js
  */
 
 import {
-  copyFileSync,
   existsSync,
-  mkdirSync,
   readFileSync,
+  readdirSync,
+  rmSync,
   writeFileSync,
 } from "node:fs"
 import { join, dirname } from "node:path"
 import { fileURLToPath } from "node:url"
 import os from "node:os"
-import { execSync } from "node:child_process"
 
 const __filename = fileURLToPath(import.meta.url)
-const ROOT = join(dirname(__filename), "..")
+const ROOT = join(dirname(__filename), "..") // eslint-disable-line @typescript-eslint/no-unused-vars
 
 // ── helpers ──────────────────────────────────────────────────────────
 
@@ -51,33 +50,31 @@ function writeJson(path, obj) {
   writeFileSync(path, JSON.stringify(obj, null, 2) + "\n")
 }
 
-function rtkAvailable() {
-  try {
-    execSync("which rtk", { stdio: "ignore" })
-    return true
-  } catch {
-    return false
-  }
-}
-
 // ── main ─────────────────────────────────────────────────────────────
 
 const OC_DIR = opencodeDir()
-console.log(`\nctx_plugin install → ${OC_DIR}\n`)
+console.log(`\nctx_plugin uninstall → ${OC_DIR}\n`)
 
-// 1. Copy RTK plugin
-const RTK_SRC = join(ROOT, "src", "rtk.ts")
-const PLUGINS_DST = join(OC_DIR, "plugins")
-mkdirSync(PLUGINS_DST, { recursive: true })
-try {
-  copyFileSync(RTK_SRC, join(PLUGINS_DST, "rtk.ts"))
-  console.log(`  ✓ rtk.ts  →  ${PLUGINS_DST}/rtk.ts`)
-} catch (e) {
-  console.error(`  ✗ rtk.ts: ${e.message}`)
-  process.exit(1)
+// 1. Remove plugin file
+const PLUGIN_FILE = join(OC_DIR, "plugins", "rtk.ts")
+if (existsSync(PLUGIN_FILE)) {
+  rmSync(PLUGIN_FILE)
+  console.log(`  ✓ removed  ←  ${PLUGIN_FILE}`)
+} else {
+  console.log(`  - plugins/rtk.ts: not present, skipping`)
 }
 
-// 2. Ensure opencode.json exists and is clean
+// 2. Remove plugins dir if empty
+const pluginsDir = join(OC_DIR, "plugins")
+if (existsSync(pluginsDir)) {
+  const entries = readdirSync(pluginsDir)
+  if (entries.length === 0) {
+    rmSync(pluginsDir)
+    console.log("  ✓ removed empty plugins dir")
+  }
+}
+
+// 3. Prune stale ctx_plugin entries from opencode.json
 const OC_JSON = join(OC_DIR, "opencode.json")
 if (existsSync(OC_JSON)) {
   const cfg = readJson(OC_JSON)
@@ -89,15 +86,9 @@ if (existsSync(OC_JSON)) {
   if (changed) {
     writeJson(OC_JSON, cfg)
     console.log("  ✓ pruned stale opencode.json entries")
+  } else {
+    console.log("  - opencode.json: nothing to prune")
   }
-} else {
-  writeJson(OC_JSON, {})
-  console.log("  ✓ created opencode.json")
 }
 
-// 3. Warn if rtk binary is missing
-if (!rtkAvailable()) {
-  console.warn("\n  ⚠  rtk not found on PATH — plugin will be inactive until rtk is installed\n")
-}
-
-console.log("\nDone. Restart opencode to activate ctx_plugin.\n")
+console.log("\nDone. Restart opencode to apply changes.\n")
