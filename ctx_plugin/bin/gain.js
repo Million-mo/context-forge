@@ -65,7 +65,8 @@ async function queryDb(sql) {
 
   // Write SQL to a temp .py file to avoid shell quoting issues,
   // then execute it. The file is always deleted after use.
-  const tmp = path.join(os.tmpdir(), `ctx_plugin_query_${Date.now()}.py`)
+  // Use a unique file per call to handle concurrent queries
+  const tmp = path.join(os.tmpdir(), `ctx_plugin_q_${Date.now()}_${Math.random().toString(36).slice(2)}.py`)
   const script = [
     `import sqlite3, json, sys`,
     `conn = sqlite3.connect('${db.replace(/'/g, "\\'")}')`,
@@ -144,22 +145,36 @@ async function aggregateAll({ sinceDays, project, today = false } = {}) {
          ORDER BY timestamp DESC`
     : null
 
-  // parse_failures has no project_path — no project filter possible
-  const [failures, todayCmds] = await Promise.all([
-    sinceMs
-      ? queryDb(
-          `SELECT timestamp, raw_command, error_message
-           FROM parse_failures
-           WHERE 1=1 ${sinceFilter}`
-        )
-      : queryDb(
-          `SELECT timestamp, raw_command, error_message
-           FROM parse_failures`
-        ),
-    todaySql ? queryDb(todaySql) : Promise.resolve(null),
-  ])
+  // Today's failures
+  const todayFailSql = today
+    ? `SELECT timestamp, raw_command, error_message
+         FROM parse_failures
+         WHERE date(timestamp) = date('now')`
+    : null
 
-  if (!commands && !failures) return null
+  // parse_failures has no project_path — no project filter possible
+  // Execute sequentially to avoid race conditions on temp file names
+  let failures, todayCmds, todayFails
+
+  if (sinceMs) {
+    failures = await queryDb(
+      `SELECT timestamp, raw_command, error_message
+         FROM parse_failures
+         WHERE 1=1 ${sinceFilter}`
+    )
+  } else {
+    failures = await queryDb(
+      `SELECT timestamp, raw_command, error_message
+         FROM parse_failures`
+    )
+  }
+
+  if (todaySql) {
+    todayCmds = await queryDb(todaySql)
+    todayFails = await queryDb(todayFailSql)
+  }
+
+  if (!commands) return null
 
   const cmds  = (commands || [])
   const fails = (failures || [])
@@ -211,6 +226,7 @@ async function aggregateAll({ sinceDays, project, today = false } = {}) {
       ? (fails.length / (totalCmds + fails.length)) * 100
       : 0,
     todayCmds: todayCmds || null,
+    todayFails: todayFails || null,
   }
 }
 
@@ -338,54 +354,68 @@ function formatShare(agg) {
 }
 
 function formatToday(agg) {
-  const cmds = agg?.todayCmds
-  if (!cmds || cmds.length === 0) {
+  const cmds  = agg?.todayCmds  || []
+  const fails = agg?.todayFails || []
+
+  if (cmds.length === 0 && fails.length === 0) {
     return `${C.yellow}RTK today — no commands today${C.reset}\n`
   }
 
   const totalSaved = cmds.reduce((s, r) => s + (r.saved_tokens || 0), 0)
   const totalInput = cmds.reduce((s, r) => s + (r.input_tokens || 0), 0)
   const avgPct = totalInput > 0 ? (totalSaved / totalInput) * 100 : 0
-  const divider = `${C.dim}${"─".repeat(64)}${C.reset}`
+  const totalCmds = cmds.length
+  const failCount = fails.length
+  const failRate = totalCmds + failCount > 0
+    ? (failCount / (totalCmds + failCount)) * 100 : 0
 
-  const rows = cmds.map(r => {
-    const saved = r.saved_tokens || 0
-    const pct = r.savings_pct || 0
-    const time = (r.timestamp || "").slice(11, 16)
-    const cmdShort = (r.original_cmd || "").slice(0, 42)
-    const projShort = (r.project_path || "").split("/").slice(-2).join("/")
+  // By category (same classifier as aggregateAll)
+  const cats = {}
+  for (const r of cmds) {
+    const cat = classify(r.original_cmd)
+    if (!cats[cat]) cats[cat] = { saved: 0, input: 0, count: 0 }
+    cats[cat].saved  += r.saved_tokens || 0
+    cats[cat].input  += r.input_tokens || 0
+    cats[cat].count  += 1
+  }
+  const byCat = Object.entries(cats)
+    .map(([name, d]) => ({
+      name,
+      saved: d.saved,
+      pct: d.input > 0 ? (d.saved / d.input) * 100 : 0,
+      count: d.count,
+    }))
+    .sort((a, b) => b.saved - a.saved)
 
-    const savedColor = saved > 5000 ? C.brightGreen
-      : saved > 500  ? C.green
-      : saved > 0    ? C.yellow
-      : C.dim
-    const pctColor  = pct >= 80 ? C.brightGreen
-      : pct >= 60   ? C.green
-      : pct >= 40   ? C.yellow
-      : pct > 0     ? C.red
-      : C.dim
+  const catWidth = Math.max(12, ...byCat.map(c => c.name.length))
+  const maxSaved = byCat[0]?.saved || 1
 
-    return (
-      `  ${C.blue}${time}${C.reset}` +
-      `  ${savedColor}${fmtNum(saved).padStart(9)}${C.reset} saved` +
-      `  ${pctColor}${(pct).toFixed(1)}%${C.reset}  ` +
-      `${C.white}${cmdShort}${C.reset}` +
-      `  ${C.dim}${projShort}${C.reset}`
-    )
+  const failLines = fails.slice(0, 5).map(f => {
+    const short = (f.raw_command || "").slice(0, 48)
+    return `  ${C.red}✗${C.reset} ${short.padEnd(48)} ${C.dim}parse failure${C.reset}`
   })
+  if (failCount > 5) failLines.push(`  ${C.dim}… and ${failCount - 5} more${C.reset}`)
+
+  const divider = `${C.dim}${"─".repeat(60)}${C.reset}`
 
   return [
     `\n${C.bold}${C.brightGreen}RTK today${C.reset}`,
     divider,
-    `  ${C.white}${cmds.length}${C.reset} commands` +
+    `  ${C.white}${totalCmds}${C.reset} commands` +
     `  ·  ${C.brightGreen}${fmtNum(totalSaved)}${C.reset} tokens saved` +
-    `  ·  ${C.brightCyan}${avgPct.toFixed(1)}%${C.reset} avg`,
-    divider,
-    `  ${C.dim}TIME     SAVED       RATE   COMMAND                              PROJECT${C.reset}`,
-    ...rows,
+    `  ·  ${C.brightCyan}${avgPct.toFixed(1)}%${C.reset} avg` +
+    (failCount > 0
+      ? `  ·  ${C.yellow}${failCount}${C.reset} failures (${C.red}${failRate.toFixed(0)}%${C.reset})`
+      : ""),
+    "",
+    `  ${C.dim}by category (today):${C.reset}`,
+    ...byCat.map(c => formatRow(c, maxSaved, catWidth)),
+    failCount > 0
+      ? `\n  ${C.dim}failures (today):${C.reset}\n${failLines.join("\n")}`
+      : "",
     `\n${divider}`,
     `  ${C.dim}DB: ${rtkHistoryDb()}${C.reset}\n`,
-  ].join("\n")
+  ].filter(Boolean).join("\n")
 }
 
 // ---------------------------------------------------------------------------
