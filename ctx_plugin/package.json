@@ -3,17 +3,23 @@
   "version": "0.1.0",
   "type": "module",
   "bin": {
-    "ctx_plugin": "./bin/cli.js"
+    "ctx_plugin": "./dist/cli.js"
   },
   "exports": {
     ".": "./src/index.ts",
-    "./rtk": "./src/rtk.ts"
+    "./rtk": "./src/rtk.ts",
+    "./mcp": "./src/mcp/server.ts"
   },
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "preinstall": "npm run build",
+    "postinstall": "ctx_plugin install"
   },
   "dependencies": {
-    "@opencode-ai/plugin": "latest"
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "@opencode-ai/plugin": "latest",
+    "zod": "^3.25.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

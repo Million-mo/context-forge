@@ -14,7 +14,7 @@ import path from "node:path"
 import os from "node:os"
 import { existsSync, unlinkSync } from "node:fs"
 
-const { mkdirSync, lstatSync, realpathSync, statSync, openSync, writeSync, closeSync, renameSync, readFileSync } = fs
+const { mkdirSync, lstatSync, realpathSync, statSync, openSync, writeSync, closeSync, renameSync, readFileSync, readSync } = fs
 
 // ---------------------------------------------------------------------------
 // RTK
