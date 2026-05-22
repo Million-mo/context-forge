@@ -268,35 +268,195 @@ function getActivationMessage(mode) {
 }
 
 // ---------------------------------------------------------------------------
+// Routing & Security (new)
+// ---------------------------------------------------------------------------
+
+// Lazy imports to avoid circular deps
+let _routeTool: ((ctx: { tool: string; args: Record<string, unknown>; sessionId: string; projectDir?: string; mcpReady?: boolean }) => { action: string; reason?: string; updatedArgs?: Record<string, unknown>; additionalContext?: string }) | null = null
+let _normalizeTool: ((name: string) => string) | null = null
+let _isCtxPluginTool: ((name: string) => boolean) | null = null
+
+async function getRouting() {
+  if (!_routeTool) {
+    try {
+      const routingMod = await import("./hooks/routing.js")
+      const namingMod = await import("./hooks/tool-naming.js")
+      _routeTool = routingMod.routeTool
+      _normalizeTool = namingMod.normalizeToolName
+      _isCtxPluginTool = namingMod.isCtxPluginTool
+    } catch {
+      // Routing not available — fail silently
+    }
+  }
+}
+
+function checkMcpReady(): boolean {
+  // Detect if ctx_plugin MCP server is configured
+  const configDir = process.env.OPENCODE_CONFIG_DIR ||
+    (process.env.XDG_CONFIG_HOME && path.join(process.env.XDG_CONFIG_HOME, "opencode")) ||
+    (process.platform === "win32"
+      ? path.join(process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming"), "opencode")
+      : path.join(os.homedir(), ".config", "opencode"))
+  try {
+    const configPath = path.join(configDir, "opencode.json")
+    if (existsSync(configPath)) {
+      const cfg = JSON.parse(readFileSync(configPath, "utf8"))
+      if (cfg?.mcpServers?.ctx_plugin) return true
+    }
+  } catch {}
+  return false
+}
+
+// Safe command patterns for permission.ask auto-grant
+const SAFE_PATTERNS = [
+  /^git\s+(status|diff|log|branch|remote|tag|stash|pull|push)/,
+  /^npm\s+(install|run|test|build|ci|outdated)/,
+  /^pnpm\s+/,
+  /^yarn\s+/,
+  /^bun\s+/,
+  /^cargo\s+/,
+  /^go\s+(run|build|test|get)/,
+  /^ls(?!\s+-[a-zA-Z]*R)/,
+  /^pwd$/,
+  /^whoami$/,
+  /^echo\s/,
+  /^mkdir\s/,
+  /^touch\s/,
+  /^cat\s/,
+  /^grep\s/,
+]
+
+const DANGEROUS_PATTERNS = [
+  /curl.*\|.*sh/i,
+  /wget.*\|.*sh/i,
+  /rm\s+-rf\s+\/(?!proc|sys|dev)/,
+  /\beval\s*\(/,
+  /PYTHONSTARTUP/,
+  /LD_PRELOAD/,
+]
+
+function isSafeCommand(cmd: string): boolean {
+  return SAFE_PATTERNS.some(rx => rx.test(cmd.trim()))
+}
+
+function isDangerousCommand(cmd: string): boolean {
+  return DANGEROUS_PATTERNS.some(rx => rx.test(cmd))
+}
+
+// ---------------------------------------------------------------------------
 // Plugin factory
 // ---------------------------------------------------------------------------
 
 export const CtxPlugin = async (input) => {
   const $ = input.$
   const rtkAvailable = await checkRtkAvailable($)
+  const mcpReady = checkMcpReady()
+  await getRouting()
 
   // Session-init guard — runs once on first chat.message
   let sessionInitialized = false
 
+  // Session ID (stable across hooks)
+  const sessionId = String(input.sessionID ?? input.sessionId ?? process.pid)
+
   return {
-    // RTK: rewrite bash/shell commands before execution
+    // RTK + Security + Guidance: rewrite bash/shell before execution
     "tool.execute.before": async (input, output) => {
       const tool = String(input.tool ?? "").toLowerCase()
-      if (tool !== "bash" && tool !== "shell") return
       const args = (output.args ?? {}) ?? {}
-      if (!args.command) return
-      const command = String(args.command)
-      if (!command) return
 
-      if (rtkAvailable) {
-        try {
-          const result = await $`rtk rewrite ${command}`.quiet().nothrow()
-          const rewritten = String(result.stdout).trim()
-          if (rewritten && rewritten !== command) {
-            args.command = rewritten
+      // Use routing for all tools (not just bash/shell)
+      if (_routeTool && _normalizeTool && _isCtxPluginTool) {
+        const normalized = _normalizeTool(String(input.tool ?? ""))
+        if (!_isCtxPluginTool(normalized)) {
+          const decision = _routeTool({
+            tool: String(input.tool ?? ""),
+            args,
+            sessionId,
+            projectDir: input.directory ?? input.worktree,
+            mcpReady,
+          })
+
+          if (decision.action === "deny") {
+            // Block execution by throwing
+            throw new Error(`[ctx_plugin security] ${decision.reason ?? "blocked by security policy"}`)
           }
-        } catch {}
+
+          if (decision.action === "context" && decision.additionalContext) {
+            // Inject guidance into output context (opencode may render this)
+            output.context = output.context ?? {}
+            if (typeof output.context === "object" && output.context !== null) {
+              ;(output.context as Record<string, unknown>).__ctxPluginGuidance = decision.additionalContext
+            }
+          }
+
+          if (decision.action === "modify" && decision.updatedArgs) {
+            Object.assign(args, decision.updatedArgs)
+          }
+        }
       }
+
+      // RTK rewrite: only for bash/shell commands
+      if (tool === "bash" || tool === "shell") {
+        if (!args.command) return
+        const command = String(args.command)
+        if (!command) return
+
+        if (rtkAvailable) {
+          try {
+            const result = await $`rtk rewrite ${command}`.quiet().nothrow()
+            const rewritten = String(result.stdout).trim()
+            if (rewritten && rewritten !== command) {
+              args.command = rewritten
+            }
+          } catch {}
+        }
+      }
+    },
+
+    // tool.execute.after: capture results for SessionDB (future use)
+    "tool.execute.after": async (input, output) => {
+      const tool = String(input.tool ?? "").toLowerCase()
+      // TODO: wire to SessionDB once Phase 4 is implemented
+      // For now, this hook is available for future event capture
+      if (process.env.CTX_PLUGIN_VERBOSE === "1") {
+        const args = (input.args ?? {}) ?? {}
+        const title = output.title ?? tool
+        const outputText = typeof output.output === "string" ? output.output.slice(0, 200) : String(output.output).slice(0, 200)
+        console.error(`[ctx_plugin] tool: ${title}, args: ${JSON.stringify(args).slice(0, 100)}, output: ${outputText}...`)
+      }
+    },
+
+    // shell.env: inject ctx_* environment variables into all shells
+    "shell.env": async (input, output) => {
+      output.env = output.env ?? {}
+      output.env["CTX_PLUGIN_VERSION"] = "0.2.0"
+      output.env["CTX_PLUGIN_RTK_AVAILABLE"] = rtkAvailable ? "1" : "0"
+      output.env["CTX_PLUGIN_MCP_READY"] = mcpReady ? "1" : "0"
+      if (input.directory) {
+        output.env["CTX_PROJECT_DIR"] = input.directory
+      }
+    },
+
+    // permission.ask: auto-grant safe commands, deny dangerous ones
+    "permission.ask": async (input, output) => {
+      const perm = input as { permission?: { type?: string; command?: string } }
+      const ptype = perm.permission?.type ?? ""
+      const pcmd = perm.permission?.command ?? ""
+
+      if (ptype === "bash" || ptype === "shell") {
+        if (isDangerousCommand(pcmd)) {
+          output.status = "deny"
+          return
+        }
+        if (isSafeCommand(pcmd)) {
+          output.status = "allow"
+          return
+        }
+      }
+
+      // Default: ask the user
+      output.status = "ask"
     },
 
     // Session created — fires on opencode startup. Initialize caveman mode.
@@ -341,6 +501,20 @@ export const CtxPlugin = async (input) => {
       if (active && !INDEPENDENT_MODES.has(active)) {
         parts.push({ type: "text", text: "\n\n" + reinforcementLine(active) })
       }
+
+      // Inject routing guidance context if available
+      if (_routeTool && output.context) {
+        const ctx = output.context as Record<string, unknown>
+        if (ctx.__ctxPluginGuidance) {
+          parts.push({ type: "text", text: "\n\n" + String(ctx.__ctxPluginGuidance) })
+        }
+      }
+    },
+
+    // event: passthrough for future event types
+    // (session.created is handled by the dedicated hook above)
+    "event": async (input) => {
+      // Reserved for future event routing
     },
   }
 }

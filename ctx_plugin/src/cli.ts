@@ -8,10 +8,11 @@
  *   - all:     Install all components
  */
 
-import { readFileSync, writeFileSync, existsSync, readdirSync, cpSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, readdirSync, cpSync, mkdirSync, rmSync } from "node:fs";
 import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
+import { execSync } from "node:child_process";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -191,7 +192,6 @@ function uninstallPluginForce(): { success: boolean; message: string } {
     return { success: true, message: `Plugin is not installed.` };
   }
 
-  const { rmSync } = require("node:fs");
   rmSync(pluginPath);
   return { success: true, message: `Plugin removed from ${pluginPath}` };
 }
@@ -231,7 +231,6 @@ export { CtxPlugin as ctxPlugin, default as ctxPlugin };
 
 function checkRtkAvailable(): boolean {
   try {
-    const { execSync } = require("node:child_process");
     execSync("which rtk", { stdio: "pipe" });
     return true;
   } catch {
@@ -267,6 +266,77 @@ function statusCaveman(): { installed: boolean; details: Record<string, string> 
       flag: existsSync(flagPath) ? `active (${readFileSync(flagPath, "utf-8").trim()})` : "inactive",
     },
   };
+}
+
+// ─────────────────────────────────────────────────────────
+// Component: Security Policy
+// ─────────────────────────────────────────────────────────
+
+async function printSecurity(): Promise<void> {
+  console.log(`\nctx_plugin Security Policies`);
+  console.log(`─`.repeat(50));
+
+  let policies: Array<{ deny: string[]; allow: string[]; ask: string[] }> = [];
+  try {
+    const mod = await import("./security.js");
+    policies = mod.readBashPolicies();
+  } catch {
+    policies = [];
+  }
+
+  if (policies.length === 0) {
+    console.log(`  No policies loaded (using built-in defaults)`);
+  } else {
+    for (const policy of policies) {
+      if (policy.deny.length > 0) console.log(`  Deny patterns: ${policy.deny.length}`);
+      if (policy.allow.length > 0) console.log(`  Allow patterns: ${policy.allow.length}`);
+      if (policy.ask.length > 0) console.log(`  Ask patterns: ${policy.ask.length}`);
+    }
+  }
+
+  const failMode = process.env.CTX_PLUGIN_REQUIRE_SECURITY;
+  console.log(`\nFail mode: ${failMode === "1" ? "CLOSED (deny on policy match)" : "OPEN (warn + allow)"}`);
+  console.log(`Set CTX_PLUGIN_REQUIRE_SECURITY=1 to enable fail-closed mode.`);
+}
+
+// ─────────────────────────────────────────────────────────
+// Purge
+// ─────────────────────────────────────────────────────────
+
+async function printPurge(args: string[]): Promise<void> {
+  console.log(`\nctx_plugin Purge`);
+  console.log(`─`.repeat(50));
+
+  try {
+    const { initSessionDb, cleanupOldSessions, getSessionDbPath, deleteSession } = await import("./session-db.js");
+    initSessionDb();
+
+    const daysArg = args.find(a => a.startsWith("--days="));
+    const sessionArg = args.find(a => a.startsWith("--session="));
+    const dryRun = args.includes("--dry-run");
+
+    if (sessionArg) {
+      const sessionId = sessionArg.split("=")[1];
+      if (!dryRun) {
+        deleteSession(sessionId);
+        console.log(`  Deleted session: ${sessionId}`);
+      } else {
+        console.log(`  Would delete session: ${sessionId}`);
+      }
+    } else {
+      const days = daysArg ? parseInt(daysArg.split("=")[1], 10) : 0;
+      if (!dryRun) {
+        const purged = cleanupOldSessions(days);
+        console.log(`  Purged ${purged} sessions older than ${days} days`);
+      } else {
+        console.log(`  Would purge sessions older than ${days} days`);
+      }
+    }
+
+    console.log(`  Database: ${getSessionDbPath()}`);
+  } catch (e) {
+    console.log(`  Error: ${e instanceof Error ? e.message : String(e)}`);
+  }
 }
 
 // ─────────────────────────────────────────────────────────
@@ -347,21 +417,26 @@ Components:
   plugin  - Opencode plugin (includes RTK + Caveman)
 
 Commands:
-  ctx_plugin install [component]   Install component(s)
-  ctx_plugin uninstall [component] Uninstall component(s)
-  ctx_plugin status               Show installation status
-  ctx_plugin doctor               Run diagnostics
+	ctx_plugin install [component]   Install component(s)
+	ctx_plugin uninstall [component] Uninstall component(s)
+	ctx_plugin status               Show installation status
+	ctx_plugin doctor               Run diagnostics
+	ctx_plugin security             Show security policies
+	ctx_plugin purge [--days=N]     Purge old session data
 
 Examples:
-  ctx_plugin install mcp          Install MCP server only
-  ctx_plugin install plugin        Install plugin (RTK + Caveman)
-  ctx_plugin install all          Install all components
-  ctx_plugin uninstall mcp       Remove MCP server
-  ctx_plugin status               Check what's installed
+	ctx_plugin install mcp          Install MCP server only
+	ctx_plugin install plugin       Install plugin (RTK + Caveman)
+	ctx_plugin install all          Install all components
+	ctx_plugin uninstall mcp        Remove MCP server
+	ctx_plugin status               Check what's installed
+	ctx_plugin security            Show security policies
+	ctx_plugin purge --days=7      Purge sessions older than 7 days
+	ctx_plugin purge --dry-run     Preview what would be purged
 `);
 }
 
-function main(): void {
+async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const command = args[0] || "help";
   const component = args[1];
@@ -424,6 +499,14 @@ function main(): void {
       printDoctor();
       break;
 
+    case "security":
+      await printSecurity();
+      break;
+
+    case "purge":
+      await printPurge(args.slice(1));
+      break;
+
     case "help":
     default:
       help();
@@ -431,4 +514,4 @@ function main(): void {
   }
 }
 
-main();
+main().catch(console.error);

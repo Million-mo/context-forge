@@ -6,7 +6,7 @@
  */
 
 import { spawn, execSync, execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -242,7 +242,9 @@ export class PolyglotExecutor {
 
       let timedOut = false;
       let resolved = false;
+      let timerFiring = false;
       const timer: NodeJS.Timeout | undefined = timeout === undefined ? undefined : setTimeout(() => {
+        timerFiring = true;
         timedOut = true;
         if (background) {
           resolved = true;
@@ -397,5 +399,183 @@ export class PolyglotExecutor {
     }
 
     return env;
+  }
+
+  /**
+   * Execute a script file by path.
+   * Detects language from shebang or file extension.
+   */
+  async executeFile(opts: {
+    path: string;
+    args?: string[];
+    env?: Record<string, string>;
+    timeout?: number;
+  }): Promise<ExecResult> {
+    const { path: filePath, args = [], env = {}, timeout } = opts;
+
+    if (!existsSync(filePath)) {
+      return {
+        stdout: "",
+        stderr: `File not found: ${filePath}`,
+        exitCode: 1,
+        timedOut: false,
+      };
+    }
+
+    // Detect language from shebang
+    const rawContent = readFileSync(filePath, { encoding: "utf-8", flag: "r" });
+    const shebang = rawContent.split("\n")[0];
+    let language: Language = "shell";
+
+    if (shebang.startsWith("#!")) {
+      if (/python/.test(shebang)) language = "python";
+      else if (/node|nodejs/.test(shebang)) language = "javascript";
+      else if (/deno/.test(shebang)) language = "typescript";
+      else if (/ruby/.test(shebang)) language = "ruby";
+      else if (/bash|sh\b/.test(shebang)) language = "shell";
+      else if (/php/.test(shebang)) language = "php";
+      else if (/perl/.test(shebang)) language = "perl";
+      else if (/r\b|Rscript/.test(shebang)) language = "r";
+    }
+
+    // Fallback: detect from extension
+    if (language === "shell") {
+      const ext = filePath.split(".").pop()?.toLowerCase();
+      const extMap: Record<string, Language> = {
+        js: "javascript", mjs: "javascript", cjs: "javascript",
+        ts: "typescript", mts: "typescript",
+        py: "python",
+        rb: "ruby",
+        go: "go",
+        rs: "rust",
+        php: "php",
+        pl: "perl",
+        R: "r", r: "r",
+        exs: "elixir",
+        sh: "shell", bash: "shell",
+      };
+      if (ext && extMap[ext]) language = extMap[ext];
+    }
+
+    // Build command with arguments
+    const cmd = buildCommand(this.#runtimes, language, filePath);
+    if (cmd[0] !== "__rust_compile_run__" && args.length > 0) {
+      cmd.push(...args);
+    }
+
+    const tmpDir = mkdtempSync(join(OS_TMPDIR, ".ctx-plugin-file-"));
+    const mergedEnv = { ...this.#buildSafeEnv(tmpDir), ...env };
+
+    try {
+      if (cmd[0] === "__rust_compile_run__") {
+        return await this.#compileAndRun(filePath, tmpDir, timeout);
+      }
+
+      const cwd = language === "shell" ? this.#projectRoot : tmpDir;
+      return new Promise((res) => {
+        const needsShell = isWin && ["tsx", "ts-node", "elixir"].includes(cmd[0]);
+        let spawnCmd = cmd[0];
+        let spawnArgs = isWin ? cmd.slice(1).map((a) => a.replace(/\\/g, "/")) : cmd.slice(1);
+
+        const proc = needsShell
+          ? spawn([spawnCmd, ...spawnArgs].join(" "), [], {
+            cwd, stdio: ["ignore", "pipe", "pipe"], env: mergedEnv,
+            detached: !isWin, windowsHide: isWin, shell: true,
+          })
+          : spawn(spawnCmd, spawnArgs, {
+            cwd, stdio: ["ignore", "pipe", "pipe"], env: mergedEnv,
+            detached: !isWin, windowsHide: isWin, shell: false,
+          });
+
+        let timedOut = false;
+        let resolved = false;
+        let capExceeded = false;
+        const timer = timeout === undefined ? undefined : setTimeout(() => {
+          timedOut = true;
+          resolved = true;
+          killTree(proc);
+        }, timeout);
+
+        const stdoutChunks: Buffer[] = [];
+        const stderrChunks: Buffer[] = [];
+        let totalBytes = 0;
+
+        proc.stdout!.on("data", (chunk: Buffer) => {
+          totalBytes += chunk.length;
+          if (totalBytes <= this.#hardCapBytes) {
+            stdoutChunks.push(chunk);
+          } else if (!capExceeded) {
+            capExceeded = true;
+            killTree(proc);
+          }
+        });
+        proc.stderr!.on("data", (chunk: Buffer) => {
+          totalBytes += chunk.length;
+          if (totalBytes <= this.#hardCapBytes) {
+            stderrChunks.push(chunk);
+          } else if (!capExceeded) {
+            capExceeded = true;
+            killTree(proc);
+          }
+        });
+
+        proc.on("close", (exitCode) => {
+          clearTimeout(timer);
+          if (resolved) return;
+          let rawStderr = Buffer.concat(stderrChunks).toString("utf-8");
+          if (capExceeded) {
+            rawStderr += `\n[output capped at ${(this.#hardCapBytes / 1024 / 1024).toFixed(0)}MB - process killed]`;
+          }
+          res({
+            stdout: Buffer.concat(stdoutChunks).toString("utf-8"),
+            stderr: rawStderr,
+            exitCode: timedOut ? 1 : (exitCode ?? 1),
+            timedOut,
+          });
+        });
+        proc.on("error", (err) => {
+          clearTimeout(timer);
+          if (resolved) return;
+          res({ stdout: "", stderr: err.message, exitCode: 1, timedOut: false });
+        });
+      });
+    } finally {
+      try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    }
+  }
+
+  /**
+   * Execute multiple code blocks in batch.
+   */
+  async batchExecute(opts: {
+    commands: Array<{ language: Language; code: string }>;
+    sequential?: boolean;
+    stopOnError?: boolean;
+  }): Promise<{
+    results: ExecResult[];
+    totalTime: number;
+  }> {
+    const { commands, sequential = false, stopOnError = false } = opts;
+    const results: ExecResult[] = [];
+    const startTime = Date.now();
+
+    if (sequential) {
+      for (const cmd of commands) {
+        const result = await this.execute({
+          language: cmd.language,
+          code: cmd.code,
+          timeout: 30000,
+        });
+        results.push(result);
+        if (stopOnError && result.exitCode !== 0) break;
+      }
+    } else {
+      const promises = commands.map((cmd) =>
+        this.execute({ language: cmd.language, code: cmd.code, timeout: 30000 }),
+      );
+      results.push(...(await Promise.all(promises)));
+    }
+
+    return { results, totalTime: Date.now() - startTime };
   }
 }

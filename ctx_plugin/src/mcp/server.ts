@@ -16,11 +16,11 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { PolyglotExecutor } from "./executor.js";
-import { getAvailableLanguages, getRuntimeSummary } from "./runtime.js";
+import { getAvailableLanguages, getRuntimeSummary, getRuntimeInfo } from "./runtime.js";
 import { ContentStore } from "./store.js";
 
 // Server version
-const VERSION = "0.1.0";
+const VERSION = "0.2.0";
 
 // Get project directory from environment or cwd
 function getProjectDir(): string {
@@ -70,6 +70,30 @@ const ExecuteSchema = z.object({
   timeout: z.number().optional(),
 });
 
+const ExecuteFileSchema = z.object({
+  path: z.string(),
+  args: z.array(z.string()).optional(),
+  env: z.record(z.string()).optional(),
+  timeout: z.number().optional(),
+});
+
+const VALID_LANGUAGES = ["javascript", "typescript", "python", "shell", "ruby", "go", "rust", "php", "perl", "r", "elixir"] as const;
+
+const BatchExecuteSchema = z.object({
+  commands: z.array(z.object({
+    language: z.string(),
+    code: z.string(),
+  })),
+  sequential: z.boolean().optional(),
+  stopOnError: z.boolean().optional(),
+}).transform((val) => ({
+  ...val,
+  commands: val.commands.map((cmd) => ({
+    language: cmd.language as (typeof VALID_LANGUAGES)[number],
+    code: cmd.code,
+  })),
+}));
+
 const IndexSchema = z.object({
   content: z.string().optional(),
   path: z.string().optional(),
@@ -81,6 +105,16 @@ const SearchSchema = z.object({
   limit: z.number().optional(),
   source: z.string().optional(),
   contentType: z.enum(["code", "prose"]).optional(),
+});
+
+const FetchAndIndexSchema = z.object({
+  url: z.string(),
+  source: z.string().optional(),
+});
+
+const PurgeSchema = z.object({
+  sessionId: z.string().optional(),
+  daysOld: z.number().optional(),
 });
 
 // Register tools
@@ -200,6 +234,70 @@ server.registerTool(
   }
 );
 
+server.registerTool(
+  "ctx_execute_file",
+  {
+    title: "Execute Script File",
+    description: "Read and execute a script file with sandboxed environment",
+    inputSchema: ExecuteFileSchema,
+  },
+  async (args) => {
+    const result = await executor.executeFile({
+      path: args.path,
+      args: args.args,
+      env: args.env,
+      timeout: args.timeout,
+    });
+    return {
+      content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+    };
+  }
+);
+
+server.registerTool(
+  "ctx_batch_execute",
+  {
+    title: "Batch Execute",
+    description: "Execute multiple code blocks sequentially or in parallel",
+    inputSchema: BatchExecuteSchema,
+  },
+  async (args) => {
+    const results = await executor.batchExecute({
+      commands: args.commands,
+      sequential: args.sequential ?? false,
+      stopOnError: args.stopOnError ?? false,
+    });
+    return {
+      content: [{ type: "text", text: JSON.stringify(results, null, 2) }],
+    };
+  }
+);
+
+server.registerTool(
+  "ctx_purge",
+  {
+    title: "Purge Session Data",
+    description: "Clear session data from the SQLite store",
+    inputSchema: PurgeSchema,
+  },
+  async (args) => {
+    const { initSessionDb, cleanupOldSessions, deleteSession, getSessionDbPath } = await import("../session-db.js");
+    initSessionDb(getProjectDir());
+
+    if (args.sessionId) {
+      deleteSession(args.sessionId);
+      return {
+        content: [{ type: "text", text: `Deleted session: ${args.sessionId}` }],
+      };
+    }
+
+    const purged = cleanupOldSessions(args.daysOld ?? 0);
+    return {
+      content: [{ type: "text", text: `Purged ${purged} old sessions from ${getSessionDbPath()}` }],
+    };
+  }
+);
+
 // Register tools list handler
 server.server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
@@ -259,6 +357,71 @@ server.server.setRequestHandler(ListToolsRequestSchema, async () => ({
       name: "ctx_stats",
       description: "Get content store statistics",
       inputSchema: { type: "object", properties: {} },
+    },
+    {
+      name: "ctx_execute_file",
+      description: "Read and execute a script file with sandboxed environment",
+      inputSchema: {
+        type: "object",
+        properties: {
+          path: { type: "string" },
+          args: { type: "array", items: { type: "string" } },
+          env: { type: "object", additionalProperties: { type: "string" } },
+          timeout: { type: "number" },
+        },
+        required: ["path"],
+      },
+    },
+    {
+      name: "ctx_batch_execute",
+      description: "Execute multiple code blocks sequentially or in parallel",
+      inputSchema: {
+        type: "object",
+        properties: {
+          commands: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                language: { type: "string" },
+                code: { type: "string" },
+              },
+              required: ["language", "code"],
+            },
+          },
+          sequential: { type: "boolean" },
+          stopOnError: { type: "boolean" },
+        },
+        required: ["commands"],
+      },
+    },
+    {
+      name: "ctx_fetch_and_index",
+      description: "Fetch web content and index it for search",
+      inputSchema: {
+        type: "object",
+        properties: {
+          url: { type: "string" },
+          source: { type: "string" },
+        },
+        required: ["url"],
+      },
+    },
+    {
+      name: "ctx_doctor",
+      description: "Run system diagnostics for ctx_plugin installation",
+      inputSchema: { type: "object", properties: {} },
+    },
+    {
+      name: "ctx_purge",
+      description: "Clear session data from the SQLite store",
+      inputSchema: {
+        type: "object",
+        properties: {
+          sessionId: { type: "string" },
+          daysOld: { type: "number" },
+        },
+      },
     },
   ],
 }));
@@ -357,6 +520,159 @@ server.server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const stats = store.getStats();
       return {
         content: [{ type: "text", text: JSON.stringify(stats, null, 2) }],
+      };
+    }
+
+    if (name === "ctx_execute_file") {
+      const parsed = ExecuteFileSchema.safeParse(args);
+      if (!parsed.success) {
+        return {
+          content: [{ type: "text", text: `Invalid arguments: ${parsed.error.message}` }],
+          isError: true,
+        };
+      }
+      const result = await executor.executeFile({
+        path: parsed.data.path,
+        args: parsed.data.args,
+        env: parsed.data.env,
+        timeout: parsed.data.timeout,
+      });
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+        isError: result.exitCode !== 0,
+      };
+    }
+
+    if (name === "ctx_batch_execute") {
+      const parsed = BatchExecuteSchema.safeParse(args);
+      if (!parsed.success) {
+        return {
+          content: [{ type: "text", text: `Invalid arguments: ${parsed.error.message}` }],
+          isError: true,
+        };
+      }
+      const result = await executor.batchExecute({
+        commands: parsed.data.commands,
+        sequential: parsed.data.sequential,
+        stopOnError: parsed.data.stopOnError,
+      });
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+      };
+    }
+
+    if (name === "ctx_fetch_and_index") {
+      const parsed = FetchAndIndexSchema.safeParse(args);
+      if (!parsed.success) {
+        return {
+          content: [{ type: "text", text: `Invalid arguments: ${parsed.error.message}` }],
+          isError: true,
+        };
+      }
+      try {
+        const response = await fetch(parsed.data.url, {
+          headers: { "User-Agent": "ctx_plugin/1.0" },
+          signal: AbortSignal.timeout(15000),
+        });
+        if (!response.ok) {
+          return {
+            content: [{ type: "text", text: `HTTP ${response.status}: ${response.statusText}` }],
+            isError: true,
+          };
+        }
+        const text = await response.text();
+        const store = getStore();
+        const indexResult = await store.index(text, { source: parsed.data.source ?? parsed.data.url });
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify({
+              url: parsed.data.url,
+              size: text.length,
+              indexed: indexResult.totalChunks,
+              sourceId: indexResult.sourceId,
+            }, null, 2),
+          }],
+        };
+      } catch (error) {
+        return {
+          content: [{ type: "text", text: `Fetch failed: ${error instanceof Error ? error.message : String(error)}` }],
+          isError: true,
+        };
+      }
+    }
+
+    if (name === "ctx_doctor") {
+      const checks = [];
+      const runtimes = executor.runtimes;
+
+      for (const lang of ["javascript", "typescript", "python", "shell"] as const) {
+        const rt = getRuntimeInfo(runtimes, lang);
+        checks.push({
+          check: `${lang} runtime`,
+          status: rt.available ? "pass" : "fail",
+          detail: rt.available ? `${rt.command} (${rt.version})` : "not found",
+        });
+      }
+
+      try {
+        const { execSync } = await import("child_process");
+        const rtkVersion = execSync("rtk --version 2>/dev/null || rtk version 2>/dev/null || echo 'not found'", {
+          encoding: "utf-8",
+          timeout: 3000,
+        }).trim();
+        checks.push({ check: "rtk", status: "pass", detail: rtkVersion });
+      } catch {
+        checks.push({ check: "rtk", status: "warn", detail: "not found in PATH" });
+      }
+
+      try {
+        const store = getStore();
+        const stats = store.getStats();
+        checks.push({
+          check: "content store",
+          status: "pass",
+          detail: `${stats.totalChunks} chunks, ${stats.totalSources} sources`,
+        });
+      } catch (e) {
+        checks.push({
+          check: "content store",
+          status: "fail",
+          detail: `${e instanceof Error ? e.message : String(e)}`,
+        });
+      }
+
+      const passed = checks.filter(c => c.status === "pass").length;
+      const failed = checks.filter(c => c.status === "fail").length;
+      const warned = checks.filter(c => c.status === "warn").length;
+
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            version: VERSION,
+            platform: process.platform,
+            node: process.version,
+            summary: { passed, failed, warned },
+            checks,
+          }, null, 2),
+        }],
+      };
+    }
+
+    if (name === "ctx_purge") {
+      const { initSessionDb, cleanupOldSessions, deleteSession, getSessionDbPath } = await import("../session-db.js");
+      initSessionDb(getProjectDir());
+      const parsed = PurgeSchema.safeParse(args ?? {});
+
+      if (parsed.success && parsed.data.sessionId) {
+        deleteSession(parsed.data.sessionId);
+        return { content: [{ type: "text", text: `Deleted session: ${parsed.data.sessionId}` }] };
+      }
+
+      const purged = cleanupOldSessions(parsed.success ? (parsed.data.daysOld ?? 0) : 0);
+      return {
+        content: [{ type: "text", text: `Purged ${purged} old sessions from ${getSessionDbPath()}` }],
       };
     }
 
