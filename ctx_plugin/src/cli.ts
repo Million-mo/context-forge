@@ -58,10 +58,16 @@ function getPluginFilePath(): string {
 interface OpencodeConfig {
   $schema?: string;
   permission?: Record<string, unknown>;
-  mcpServers?: Record<string, {
-    command: string;
-    args: string[];
+  mcp?: Record<string, {
+    type?: "local" | "remote";
+    command?: string[];
+    args?: string[];
     env?: Record<string, string>;
+    enabled?: boolean;
+    timeout?: number;
+    url?: string;
+    headers?: Record<string, string>;
+    [key: string]: unknown;
   }>;
   [key: string]: unknown;
 }
@@ -92,15 +98,15 @@ function installMcp(): { success: boolean; message: string } {
   }
 
   const config = readOpencodeConfig();
-  if (!config.mcpServers) config.mcpServers = {};
+  if (!config.mcp) config.mcp = {};
 
-  if (config.mcpServers["ctx_plugin"]) {
+  if (config.mcp["ctx_plugin"]) {
     return { success: true, message: `ctx_plugin MCP server is already installed.` };
   }
 
-  config.mcpServers["ctx_plugin"] = {
-    command: "node",
-    args: [serverPath],
+  config.mcp["ctx_plugin"] = {
+    type: "local",
+    command: ["node", serverPath],
   };
 
   writeOpencodeConfig(config);
@@ -109,13 +115,13 @@ function installMcp(): { success: boolean; message: string } {
 
 function uninstallMcp(): { success: boolean; message: string } {
   const config = readOpencodeConfig();
-  if (!config.mcpServers?.["ctx_plugin"]) {
+  if (!config.mcp?.["ctx_plugin"]) {
     return { success: true, message: `ctx_plugin MCP server is not installed.` };
   }
 
-  delete config.mcpServers["ctx_plugin"];
-  if (Object.keys(config.mcpServers).length === 0) {
-    delete config.mcpServers;
+  delete config.mcp["ctx_plugin"];
+  if (Object.keys(config.mcp).length === 0) {
+    delete config.mcp;
   }
 
   writeOpencodeConfig(config);
@@ -124,17 +130,17 @@ function uninstallMcp(): { success: boolean; message: string } {
 
 function statusMcp(): { installed: boolean; details: Record<string, string> } {
   const config = readOpencodeConfig();
-  const server = config.mcpServers?.["ctx_plugin"];
+  const server = config.mcp?.["ctx_plugin"];
   const serverPath = getMcpServerPath();
 
   return {
     installed: !!server,
     details: {
-      command: server?.command || "-",
-      args: server?.args?.join(" ") || "-",
+      type: server?.type || "-",
+      command: server?.command?.join(" ") || "-",
       path: serverPath,
       exists: existsSync(serverPath) ? "yes" : "no",
-      match: server?.args?.[0] === serverPath ? "yes" : "no",
+      match: server?.command?.[1] === serverPath ? "yes" : "no",
     },
   };
 }
@@ -352,8 +358,8 @@ function printStatus(): void {
   console.log(`\nMCP Server:`);
   if (mcp.installed) {
     console.log(`  ✅ Installed`);
+    console.log(`    Type: ${mcp.details.type}`);
     console.log(`    Command: ${mcp.details.command}`);
-    console.log(`    Args: ${mcp.details.args}`);
     console.log(`    Server exists: ${mcp.details.exists}`);
     if (mcp.details.match === "no") {
       console.log(`    ⚠️ Path mismatch - reinstall with 'ctx_plugin install mcp'`);

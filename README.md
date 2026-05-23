@@ -121,10 +121,10 @@ context_forge/
 
 ```json
 {
-  "mcpServers": {
+  "mcp": {
     "ctx_plugin": {
-      "command": "node",
-      "args": ["/absolute/path/to/dist/mcp/server.js"]
+      "type": "local",
+      "command": ["node", "/absolute/path/to/dist/mcp/server.js"]
     }
   }
 }

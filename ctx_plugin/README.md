@@ -114,10 +114,10 @@ ctx_plugin purge --dry-run              Preview purge without executing
 
 ```json
 {
-  "mcpServers": {
+  "mcp": {
     "ctx_plugin": {
-      "command": "node",
-      "args": ["/path/to/dist/mcp/server.js"]
+      "type": "local",
+      "command": ["node", "/absolute/path/to/dist/mcp/server.js"]
     }
   }
 }
