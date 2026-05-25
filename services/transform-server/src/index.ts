@@ -12,12 +12,16 @@ type BucketHashes = Record<number, string>
 type CompressionLevel = "full" | "summary" | "placeholder" | "minimal"
 
 type ToolOutputEntry = {
-  idx: number           // index in source array
+  idx: number           // 首次调用的 index
+  lastCallIdx: number   // 最近一次调用的 index
+  callCount: number     // 调用次数
+  toolType: string      // 工具类型：read, glob, grep, web_fetch, web_search
   compressed: boolean
   level: CompressionLevel
   originalOutput: string
   compressedOutput: string
-  timestamp: number
+  timestamp: number     // 首次调用的时间
+  lastCallTime: number  // 最近一次调用的时间
 }
 
 type SessionStore = {
@@ -34,9 +38,28 @@ type SessionStore = {
 
 const BUCKET_SIZE = parseInt(process.env.BUCKET_SIZE || "10", 10)
 
+// Time thresholds (in ms) — still used as baseline
 const DECAY_FULL_MS = parseInt(process.env.DECAY_FULL_MS || "300000", 10)
 const DECAY_SUMMARY_MS = parseInt(process.env.DECAY_SUMMARY_MS || "900000", 10)
 const DECAY_PLACEHOLDER_MS = parseInt(process.env.DECAY_PLACEHOLDER_MS || "1800000", 10)
+
+// Decay weight configuration — can be tuned via experiments
+const DECAY_WEIGHTS = {
+  // Distance weight: importance of message distance (higher = distance matters more)
+  distance: parseFloat(process.env.DECAY_WEIGHT_DISTANCE || "1.0"),
+  // Time weight: importance of time age (higher = time matters more)
+  time: parseFloat(process.env.DECAY_WEIGHT_TIME || "0.3"),
+  // Frequency weight: importance of call count (higher = frequent calls decay slower)
+  frequency: parseFloat(process.env.DECAY_WEIGHT_FREQUENCY || "0.5"),
+}
+
+// Tool type decay modifiers — different tools decay at different rates
+const TOOL_DECAY_MODIFIERS: Record<string, number> = {
+  read: 0.8,        // Read is stable, decay slower
+  glob: 0.6,        // Glob results change with file structure
+  grep: 0.7,        // Grep results change with code
+  webfetch: 1.5,    // Web content changes frequently
+}
 
 // ─── Storage ──────────────────────────────────────────────────────────────────
 
@@ -89,18 +112,21 @@ function buildCompressedFromSource(
           const input = part.state?.input || {}
           const file = input.file || input.path || input.pattern || "?"
           part.state.output = `[COMPRESSED: duplicate of ${toolName} "${file}" at position ${newerIdx}]`
-          part.state._compressed = true
-          part.state._compressedReason = "duplicate"
           continue
         }
       }
 
-      if (key && decay.has(key) && decay.get(key)!.idx === i) {
+      if (key && decay.has(key)) {
         const entry = decay.get(key)!
-        if (entry.compressed && !part.state?._compressed) {
+        // Apply decay only if this is the latest call for this key
+        if (entry.compressed && entry.lastCallIdx === i) {
           part.state.output = entry.compressedOutput
         }
       }
+
+      // Clean up internal markers (if any exist from previous runs)
+      delete part.state._compressed
+      delete part.state._compressedReason
     }
 
     result.push(cloned)
@@ -110,19 +136,81 @@ function buildCompressedFromSource(
 
 // ─── Compression helpers ───────────────────────────────────────────────────────
 
-function getCompressionLevel(toolAgeMs: number): CompressionLevel {
-  if (toolAgeMs < DECAY_FULL_MS) return "full"
-  if (toolAgeMs < DECAY_FULL_MS + DECAY_SUMMARY_MS) return "summary"
-  if (toolAgeMs < DECAY_FULL_MS + DECAY_SUMMARY_MS + DECAY_PLACEHOLDER_MS) return "placeholder"
-  return "minimal"
+type DecayContext = {
+  currentUserIdx: number  // Current user message index
+  now: number             // Current timestamp
+}
+
+/**
+ * Normalize tool name to category for decay modifier lookup
+ */
+function getToolCategory(toolName: string): string {
+  return toolName.toLowerCase()
+}
+
+/**
+ * Calculate decay score based on multiple factors.
+ * Higher score = more decayed (less important).
+ * 
+ * Factors:
+ * - Distance: how far this tool call is from current user message
+ * - Time: how long since the last call
+ * - Frequency: how many times this tool has been called
+ * - Tool type: different tools decay at different rates
+ */
+function calculateDecayScore(
+  entry: ToolOutputEntry,
+  ctx: DecayContext
+): number {
+  const { distance: wDist, time: wTime, frequency: wFreq } = DECAY_WEIGHTS
+  
+  // 1. Distance score (exponential decay based on message distance)
+  // Closer to current message = lower score = less decayed
+  const msgDistance = ctx.currentUserIdx - entry.lastCallIdx
+  const distanceScore = Math.min(msgDistance / 20, 5) // Cap at 5 to avoid extreme values
+  
+  // 2. Time score (logarithmic to reduce extreme time effects)
+  // Longer time = higher score = more decayed
+  const timeAgeMs = ctx.now - entry.lastCallTime
+  const timeAgeMinutes = timeAgeMs / 60000
+  const timeScore = Math.log2(timeAgeMinutes + 1) * wTime
+  
+  // 3. Frequency score (inverse relationship)
+  // More calls = lower score = less decayed
+  const frequencyScore = Math.log2(entry.callCount + 1) * wFreq
+  
+  // 4. Tool-specific modifier
+  const toolModifier = TOOL_DECAY_MODIFIERS[entry.toolType] || 1.0
+  
+  // Combined score with tool modifier
+  const baseScore = distanceScore * wDist + timeScore - frequencyScore
+  const finalScore = baseScore * toolModifier
+  
+  // Normalize to 0-10 range for level thresholds
+  return Math.max(0, Math.min(finalScore, 10))
+}
+
+function getCompressionLevel(
+  entry: ToolOutputEntry,
+  ctx: DecayContext
+): CompressionLevel {
+  const score = calculateDecayScore(entry, ctx)
+  
+  // Thresholds for compression levels
+  if (score < 2) return "full"         // Low decay, keep full
+  if (score < 5) return "summary"     // Medium decay, summarize
+  if (score < 8) return "placeholder"  // High decay, placeholder only
+  return "minimal"                      // Very high decay, minimal
 }
 
 function compressToolOutput(toolName: string, state: any, level: CompressionLevel): string {
   const input = state?.input || {}
   const output = state?.output || ""
+  const tool = toolName.toLowerCase()
 
-  switch (toolName) {
-    case "Read": {
+  switch (tool) {
+    case "read": {
+      const filePath = input.filePath || input.file || input.path || "?"
       const lines = output.split("\n")
       const lineCount = lines.length
       switch (level) {
@@ -133,60 +221,50 @@ function compressToolOutput(toolName: string, state: any, level: CompressionLeve
             `  ... ${Math.max(0, lineCount - 6)} more lines ...`,
             ...lines.slice(-3),
           ].join("\n")
-          return `[COMPRESSED: Read "${input.file || input.path || "?"}"]\n${preview}`
+          return `[COMPRESSED: read "${filePath}"]\n${preview}`
         }
         case "placeholder":
-          return `[COMPRESSED: Read "${input.file || input.path || "?"}" — ${lineCount} lines]`
+          return `[COMPRESSED: read "${filePath}" — ${lineCount} lines]`
         default:
-          return `[COMPRESSED: Read "${input.file || input.path || "?"}"]`
+          return `[COMPRESSED: read "${filePath}"]`
       }
     }
-    case "Glob": {
+    case "glob": {
+      const pattern = input.pattern || "?"
       const lines = output.split("\n").filter(Boolean)
       const count = lines.length
       switch (level) {
         case "full": return output
         case "summary":
-          return `[COMPRESSED: Glob "${input.pattern || "?"}"] — ${count} matches: ${lines.slice(0, 5).join(", ")}${count > 5 ? ` ... +${count - 5} more` : ""}`
+          return `[COMPRESSED: glob "${pattern}"] — ${count} matches: ${lines.slice(0, 5).join(", ")}${count > 5 ? ` ... +${count - 5} more` : ""}`
         case "placeholder":
-          return `[COMPRESSED: Glob "${input.pattern || "?"}" — ${count} matches]`
+          return `[COMPRESSED: glob "${pattern}" — ${count} matches]`
         default:
-          return `[COMPRESSED: Glob "${input.pattern || "?"}"]`
+          return `[COMPRESSED: glob "${pattern}"]`
       }
     }
-    case "Grep": {
+    case "grep": {
+      const pattern = input.pattern || "?"
       const lines = output.split("\n").filter(Boolean)
       const count = lines.length
       switch (level) {
         case "full": return output
         case "summary":
-          return `[COMPRESSED: Grep "${input.pattern || "?"}"] — ${count} matches: ${lines.slice(0, 5).join(" | ")}${count > 5 ? ` ... +${count - 5} more` : ""}`
+          return `[COMPRESSED: grep "${pattern}"] — ${count} matches: ${lines.slice(0, 5).join(" | ")}${count > 5 ? ` ... +${count - 5} more` : ""}`
         case "placeholder":
-          return `[COMPRESSED: Grep "${input.pattern || "?"}" — ${count} matches]`
+          return `[COMPRESSED: grep "${pattern}" — ${count} matches]`
         default:
-          return `[COMPRESSED: Grep "${input.pattern || "?"}"]`
+          return `[COMPRESSED: grep "${pattern}"]`
       }
     }
-    case "WebFetch": {
+    case "webfetch": {
+      const url = input.url || "?"
       const size = new TextEncoder().encode(output).length
       switch (level) {
         case "full": return output
-        case "summary": return `[COMPRESSED: WebFetch "${input.url || "?"}"]\n${output.slice(0, 200)}...`
-        case "placeholder": return `[COMPRESSED: WebFetch "${input.url || "?"}" — ${size} bytes]`
-        default: return `[COMPRESSED: WebFetch "${input.url || "?"}"]`
-      }
-    }
-    case "WebSearch": {
-      const lines = output.split("\n").filter(Boolean)
-      const count = lines.length
-      switch (level) {
-        case "full": return output
-        case "summary":
-          return `[COMPRESSED: WebSearch "${input.query || input.term || "?"}"] — ${count} results: ${lines.slice(0, 3).join(" | ")}`
-        case "placeholder":
-          return `[COMPRESSED: WebSearch "${input.query || input.term || "?"}" — ${count} results]`
-        default:
-          return `[COMPRESSED: WebSearch "${input.query || input.term || "?"}"]`
+        case "summary": return `[COMPRESSED: webfetch "${url}"]\n${output.slice(0, 200)}...`
+        case "placeholder": return `[COMPRESSED: webfetch "${url}" — ${size} bytes]`
+        default: return `[COMPRESSED: webfetch "${url}"]`
       }
     }
     default:
@@ -195,18 +273,52 @@ function compressToolOutput(toolName: string, state: any, level: CompressionLeve
 }
 
 const CACHEABLE_TOOLS: Set<string> = new Set([
-  "Read", "Glob", "Grep", "WebFetch", "WebSearch",
+  "read", "glob", "grep", "webfetch",
 ])
 
 function getToolOutputKey(toolName: string, state: any): string | null {
   const input = state?.input || {}
-  switch (toolName) {
-    case "Read":    return `file:${input.file || input.path || ""}`
-    case "Glob":    return `glob:${input.pattern || ""}`
-    case "Grep":    return `grep:${input.pattern || ""}:${input.path || ""}`
-    case "WebFetch":return `url:${input.url || ""}`
-    case "WebSearch":return `search:${input.query || input.term || ""}`
-    default:        return null
+  const tool = toolName.toLowerCase()
+
+  switch (tool) {
+    case "read": {
+      const filePath = input.filePath || ""
+      const params = Object.entries(input)
+        .filter(([k, v]) => k !== "filePath" && v !== undefined && v !== "")
+        .map(([k, v]) => `${k}=${v}`)
+        .sort()
+        .join(";")
+      return params ? `file:${filePath};${params}` : `file:${filePath}`
+    }
+    case "grep": {
+      const pattern = input.pattern || ""
+      const params = Object.entries(input)
+        .filter(([k, v]) => k !== "pattern" && v !== undefined && v !== "")
+        .map(([k, v]) => `${k}=${v}`)
+        .sort()
+        .join(";")
+      return params ? `grep:${pattern};${params}` : `grep:${pattern}`
+    }
+    case "glob": {
+      const pattern = input.pattern || ""
+      const params = Object.entries(input)
+        .filter(([k, v]) => k !== "pattern" && v !== undefined && v !== "")
+        .map(([k, v]) => `${k}=${v}`)
+        .sort()
+        .join(";")
+      return params ? `glob:${pattern};${params}` : `glob:${pattern}`
+    }
+    case "webfetch": {
+      const url = input.url || ""
+      const params = Object.entries(input)
+        .filter(([k, v]) => k !== "url" && v !== undefined && v !== "")
+        .map(([k, v]) => `${k}=${v}`)
+        .sort()
+        .join(";")
+      return params ? `url:${url};${params}` : `url:${url}`
+    }
+    default:
+      return null
   }
 }
 
@@ -255,8 +367,6 @@ function compressUpTo(store: SessionStore, userMsgIdx: number): void {
             const npInput = np.state?.input || {}
             const npFile = npInput.file || npInput.path || npInput.pattern || "?"
             np.state.output = `[COMPRESSED: duplicate of ${np.tool || toolName} "${npFile}" at position ${i}]`
-            np.state._compressed = true
-            np.state._compressedReason = "duplicate"
           }
         }
       }
@@ -267,35 +377,67 @@ function compressUpTo(store: SessionStore, userMsgIdx: number): void {
 
   store.lastCompressedIdx = userMsgIdx
 
-  // ── Step 2: Time decay for latest entries in NEW range ──
-  // Only apply decay to entries in [lastDecayedIdx, userMsgIdx) to avoid re-decaying.
-  const decayStart = store.lastDecayedIdx
-  for (const [key, idx] of latestOf) {
-    if (idx < decayStart) continue // already decayed
+  // ── Step 2: Decay based on multi-factor scoring ──
+  // Build decay context with current position
+  const decayCtx: DecayContext = {
+    currentUserIdx: userMsgIdx,
+    now,
+  }
 
+  for (const [key, idx] of latestOf) {
     const msg = source[idx]
     const toolPart = (msg?.parts || []).find((p: any) => p.type === "tool")
     if (!toolPart) continue
 
     const toolName: string = toolPart.tool || ""
+    const toolCategory = getToolCategory(toolName)
     const existing = store.toolOutputs.get(key)
-    const ageMs = now - (existing?.timestamp || now)
-    const level = getCompressionLevel(ageMs)
+    const ageMs = now - (existing?.lastCallTime || existing?.timestamp || now)
 
-    if (existing && existing.idx === idx) {
+    // Calculate decay score using multi-factor formula
+    const entryForScore: ToolOutputEntry = existing ? {
+      ...existing,
+      lastCallIdx: existing.lastCallIdx || existing.idx,
+      lastCallTime: existing.lastCallTime || existing.timestamp,
+    } : {
+      idx,
+      lastCallIdx: idx,
+      callCount: 1,
+      toolType: toolCategory,
+      compressed: false,
+      level: "full",
+      originalOutput: "",
+      compressedOutput: "",
+      timestamp: now,
+      lastCallTime: now,
+    }
+
+    const level = getCompressionLevel(entryForScore, decayCtx)
+
+    if (existing) {
+      // Update existing entry
       if (level !== existing.level) {
         existing.level = level
         existing.compressed = level !== "full"
         existing.compressedOutput = compressToolOutput(toolName, toolPart.state || {}, level)
       }
+      // Update call tracking
+      existing.lastCallIdx = idx
+      existing.lastCallTime = now
+      existing.callCount = (existing.callCount || 1) + 1
     } else {
+      // Create new entry
       store.toolOutputs.set(key, {
         idx,
+        lastCallIdx: idx,
+        callCount: 1,
+        toolType: toolCategory,
         compressed: level !== "full",
         level,
         originalOutput: toolPart.state?.output?.toString() || "",
         compressedOutput: compressToolOutput(toolName, toolPart.state || {}, level),
         timestamp: now,
+        lastCallTime: now,
       })
     }
   }
