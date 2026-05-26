@@ -12,10 +12,10 @@
   },
   "llm": {
     "provider": "openai",
-    "model": "gpt-4o-mini",
-    "apiKey": "",
-    "baseUrl": "",
-    "maxTokens": 1024,
+    "model": "GLM-4.7",
+    "apiKey": "placeholder",
+    "baseUrl": "http://116.204.104.177:8123",
+    "maxTokens": 2048,
     "temperature": 0.3
   }
 }

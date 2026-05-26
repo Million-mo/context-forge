@@ -2,14 +2,18 @@
  * OpenCode Plugin: Transform messages via external service
  *
  * Hook: experimental.chat.messages.transform
- * Sends messages to a local transform server using bucket-hash delta sync
+ * Sends completed turns to a local transform server for compression.
+ * Each completed turn = one page. The current (active) turn is kept intact.
+ *
+ * Turn boundary: a turn ends when the next user message arrives.
+ * Completed turns are sent to the server for compression (dedup + decay).
+ * Current turn is never compressed — it waits for the next turn to close it.
  *
  * Flow:
- *   1. Split messages into buckets of N messages each
- *   2. Compute SHA-256 hash for each bucket
- *   3. Compare with server's known bucket hashes (stored in memory)
- *   4. Send only buckets whose hash differs from server's view
- *   5. Server merges changed buckets, returns stale buckets for client to update
+ *   1. Split messages into completed turns + current turn
+ *   2. Send completed turns to server (bucket-hash delta sync)
+ *   3. Server compresses completed turns, returns updated turn data
+ *   4. Client rebuilds messages: completed (compressed) + current (intact)
  *
  * Environment variables:
  *   TRANSFORM_SERVER_URL  - defaults to http://localhost:3000/sync
@@ -18,6 +22,34 @@
  */
 
 import { createHash } from "crypto"
+
+// ─── Types ───────────────────────────────────────────────────────────────────
+
+interface Turn {
+  index: number          // turn number (0-based)
+  startIdx: number       // index in the full messages array where this turn begins
+  endIdx: number         // index where this turn ends (exclusive)
+  messages: any[]        // the actual messages belonging to this turn
+  isCurrent: boolean     // true if this is the active (incomplete) turn
+  messageCount: number
+  tokenEstimate: number
+}
+
+interface SyncResponse {
+  turns: {
+    completed: TurnPayload[]
+    currentTurnIndex: number
+  }
+  serverBucketHashes: Record<number, string>
+}
+
+interface TurnPayload {
+  index: number
+  messages: any[]
+  isCurrent: boolean
+}
+
+// ─── Config ──────────────────────────────────────────────────────────────────
 
 const SERVER_URL =
   process.env.TRANSFORM_SERVER_URL || "http://localhost:3000/sync"
@@ -28,8 +60,16 @@ const SESSION_ID = process.env.SESSION_ID || "default"
 // ─── In-memory state ──────────────────────────────────────────────────────────
 
 const serverBucketHashes = new Map<number, string>() // index -> hash
+let lastKnownTurnCount = 0
 
-// ─── Hash utilities ───────────────────────────────────────────────────────────
+// ─── Utilities ────────────────────────────────────────────────────────────────
+
+function estimateTokens(messages: any[]): number {
+  // Rough estimate: 4 chars per token
+  return Math.ceil(
+    messages.reduce((sum, m) => sum + (JSON.stringify(m).length / 4), 0)
+  )
+}
 
 function hashBucket(messages: any[]): string {
   return createHash("sha256")
@@ -37,15 +77,81 @@ function hashBucket(messages: any[]): string {
     .digest("hex")
 }
 
-function chunkMessages(messages: any[]): { index: number; messages: any[] }[] {
-  const buckets: { index: number; messages: any[] }[] = []
-  for (let i = 0; i < messages.length; i += BUCKET_SIZE) {
-    buckets.push({
-      index: i / BUCKET_SIZE,
-      messages: messages.slice(i, i + BUCKET_SIZE),
-    })
+function getRole(msg: any): string {
+  return msg?.info?.role || msg?.role || ""
+}
+
+/**
+ * Split messages into turns.
+ * A turn ends when the NEXT message is a user message.
+ * The last turn is always marked as "current".
+ *
+ * Example:
+ *   [sys, user, asst, user, asst, user, asst]
+ *   → Turn 0: [sys, user, asst]       (completed, next is user)
+ *   → Turn 1: [user, asst]           (completed, next is user)
+ *   → Turn 2: [user, asst]           (current, no next user)
+ */
+function splitIntoTurns(messages: any[]): Turn[] {
+  if (messages.length === 0) return []
+
+  const turns: Turn[] = []
+  let currentTurnStart = 0
+
+  for (let i = 1; i < messages.length; i++) {
+    const prevMsg = messages[i - 1]
+    const currMsg = messages[i]
+    const prevRole = getRole(prevMsg)
+    const currRole = getRole(currMsg)
+
+    // Turn boundary: previous message was NOT user, current message IS user
+    if (prevRole !== "user" && currRole === "user") {
+      const turnMessages = messages.slice(currentTurnStart, i)
+      turns.push({
+        index: turns.length,
+        startIdx: currentTurnStart,
+        endIdx: i,
+        messages: turnMessages,
+        isCurrent: false,
+        messageCount: turnMessages.length,
+        tokenEstimate: estimateTokens(turnMessages),
+      })
+      currentTurnStart = i
+    }
   }
-  return buckets
+
+  // The final segment is always the current turn
+  const finalMessages = messages.slice(currentTurnStart)
+  turns.push({
+    index: turns.length,
+    startIdx: currentTurnStart,
+    endIdx: messages.length,
+    messages: finalMessages,
+    isCurrent: true,
+    messageCount: finalMessages.length,
+    tokenEstimate: estimateTokens(finalMessages),
+  })
+
+  return turns
+}
+
+function buildTurnPayloads(turns: Turn[]): TurnPayload[] {
+  return turns.map((t) => ({
+    index: t.index,
+    messages: t.messages,
+    isCurrent: t.isCurrent,
+  }))
+}
+
+function rebuildMessagesFromTurns(updatedTurns: TurnPayload[], currentTurnMessages: any[]): any[] {
+  // completed turns come back compressed; current turn comes back intact
+  const completed: any[] = []
+  for (const t of updatedTurns) {
+    if (!t.isCurrent) {
+      completed.push(...t.messages)
+    }
+  }
+  return [...completed, ...currentTurnMessages]
 }
 
 // ─── Plugin hook ─────────────────────────────────────────────────────────────
@@ -58,29 +164,33 @@ export const TransformPlugin = () => ({
     if (messages.length === 0) return
 
     try {
-      // Build current bucket hashes
-      const buckets = chunkMessages(messages)
-      const clientHashes: Record<number, string> = {}
-      for (const { index, messages: bucketMsgs } of buckets) {
-        clientHashes[index] = hashBucket(bucketMsgs)
-      }
+      const turns = splitIntoTurns(messages)
+      const completedTurns = turns.filter((t) => !t.isCurrent)
+      const currentTurn = turns.find((t) => t.isCurrent)
 
-      // Find changed buckets (hash differs from server's known hash)
-      const changedBuckets = buckets.filter(({ index, messages: bucketMsgs }) => {
-        const knownHash = serverBucketHashes.get(index)
-        const currentHash = clientHashes[index]
-        return knownHash !== currentHash
-      })
-
-      // Nothing changed
-      if (changedBuckets.length === 0) {
+      // Nothing to compress — only one turn and it's current
+      if (completedTurns.length === 0) {
         return
       }
 
-      // Build clientBucketHashes for comparison
-      const clientBucketHashes: Record<number, string> = {}
-      for (const [idx, hash] of serverBucketHashes) {
-        clientBucketHashes[idx] = hash
+      // Check if we have any new completed turns since last sync
+      if (completedTurns.length <= lastKnownTurnCount) {
+        return
+      }
+
+      const newCompletedTurns = completedTurns.slice(lastKnownTurnCount)
+
+      // Build bucket hashes for new completed turns
+      const changedBuckets: { index: number; messages: any[]; turnIndex: number }[] = []
+      for (const turn of newCompletedTurns) {
+        for (let i = 0; i < turn.messages.length; i += BUCKET_SIZE) {
+          const chunk = turn.messages.slice(i, i + BUCKET_SIZE)
+          changedBuckets.push({
+            index: turn.startIdx + i,
+            messages: chunk,
+            turnIndex: turn.index,
+          })
+        }
       }
 
       const response = await fetch(SERVER_URL, {
@@ -88,8 +198,10 @@ export const TransformPlugin = () => ({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           sessionId: SESSION_ID,
-          clientBucketHashes,
+          clientBucketHashes: Object.fromEntries(serverBucketHashes),
           changedBuckets,
+          completedTurnCount: completedTurns.length,
+          currentTurnIndex: currentTurn?.index ?? completedTurns.length,
         }),
       })
 
@@ -100,47 +212,20 @@ export const TransformPlugin = () => ({
         return
       }
 
-      const data = await response.json() as {
-        serverBucketHashes: Record<number, string>
-        staleBuckets?: { index: number; messages: any[] }[]
-        fullMessages?: any[]
-      }
+      const data = await response.json() as SyncResponse
 
-      // If server returned full state (first sync), use it
-      if (data.fullMessages) {
-        serverBucketHashes.clear()
-        for (const [idx, hash] of Object.entries(data.serverBucketHashes)) {
-          serverBucketHashes.set(parseInt(idx, 10), hash)
-        }
-        output.messages.splice(0, output.messages.length, ...data.fullMessages)
-        return
-      }
-
-      // Update known server hashes
+      // Update known hashes
       for (const [idx, hash] of Object.entries(data.serverBucketHashes)) {
-        serverBucketHashes.set(parseInt(idx, 10), hash)
+        serverBucketHashes.set(parseInt(idx as string, 10), hash as string)
       }
 
-      // Apply stale buckets from server (server has newer data)
-      if (data.staleBuckets && data.staleBuckets.length > 0) {
-        const allBuckets = chunkMessages(messages)
-
-        for (const stale of data.staleBuckets) {
-          const existingIdx = allBuckets.findIndex((b) => b.index === stale.index)
-          if (existingIdx >= 0) {
-            allBuckets[existingIdx].messages = stale.messages
-          } else {
-            allBuckets.push(stale)
-          }
-        }
-
-        // Sort and flatten
-        allBuckets.sort((a, b) => a.index - b.index)
-        const merged = allBuckets.flatMap((b) => b.messages)
-
+      // Rebuild messages: compressed completed turns + intact current turn
+      if (data.turns?.completed) {
+        const merged = rebuildMessagesFromTurns(data.turns.completed, currentTurn?.messages ?? [])
         if (merged.length !== messages.length || JSON.stringify(merged) !== JSON.stringify(messages)) {
           output.messages.splice(0, output.messages.length, ...merged)
         }
+        lastKnownTurnCount = completedTurns.length
       }
     } catch (err) {
       console.error(`[TransformPlugin] Failed to sync with transform server:`, err)

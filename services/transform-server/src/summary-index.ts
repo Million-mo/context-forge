@@ -109,8 +109,8 @@ export class SummaryIndex {
   search(sessionId: string, query: string, limit = 5): TurnSummary[] {
     if (!query.trim()) return this.listBySession(sessionId).slice(-limit)
 
-    const escaped = query.replace(/['"*()]/g, " ")
-    const ftsQuery = escaped.trim().split(/\s+/).map((w) => `"${w}"`).join(" ")
+    const escaped = query.replace(/['"*()\-:^~]/g, " ")
+    const ftsQuery = escaped.trim().split(/\s+/).filter(Boolean).map((w) => `"${w.replace(/"/g, '""')}"`).join(" ")
 
     let stmt: any
     try {

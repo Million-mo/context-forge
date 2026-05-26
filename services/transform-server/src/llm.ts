@@ -4,6 +4,8 @@ import type { LLMConfig, ParsedSummary, TurnSummary } from "./types.js"
 
 const SUMMARY_SYSTEM_PROMPT = `你是一个上下文压缩助手。请从对话轮次中提取关键信息，生成结构化摘要。
 
+重要：你没有思考能力，不要输出任何思考过程、推理步骤或解释。直接输出 JSON 结果。
+
 输出要求：
 - overview 控制在 20 字以内
 - actions 只记录关键步骤，跳过纯探索性调用（read/grep/glob 等），除非结果有特别发现
@@ -19,7 +21,7 @@ const SUMMARY_USER_PROMPT = `请为以下对话轮次生成摘要：
 {turn_content}
 </turn_messages>
 
-按此 JSON 格式输出（不要包含任何其他内容）：
+按此 JSON 格式直接输出（不要包含任何其他内容、思考过程或解释）：
 {
   "overview": "一句话描述本轮做了什么+结果",
   "intent": "用户的核心需求",
@@ -103,16 +105,24 @@ export class LLMClient {
 
   private async callOpenAI(messages: any[]): Promise<{ content: string; usage?: { total_tokens: number } }> {
     const url = `${this.config.baseUrl || "https://api.openai.com"}/v1/chat/completions`
-    const res = await fetch(url, {
-      method: "POST",
-      headers: this.buildHeaders(),
-      body: JSON.stringify({
-        model: this.config.model,
-        messages,
-        max_tokens: this.config.maxTokens,
-        temperature: this.config.temperature,
-      }),
-    })
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), 60_000)
+    let res: Response
+    try {
+      res = await fetch(url, {
+        method: "POST",
+        headers: this.buildHeaders(),
+        signal: controller.signal,
+        body: JSON.stringify({
+          model: this.config.model,
+          messages,
+          max_tokens: this.config.maxTokens,
+          temperature: this.config.temperature,
+        }),
+      })
+    } finally {
+      clearTimeout(timeout)
+    }
 
     if (!res.ok) {
       const body = await res.text()
@@ -120,8 +130,9 @@ export class LLMClient {
     }
 
     const data = await res.json() as any
+    const content = data.choices?.[0]?.message?.content || data.choices?.[0]?.message?.reasoning || ""
     return {
-      content: data.choices?.[0]?.message?.content || "",
+      content: content,
       usage: data.usage,
     }
   }
