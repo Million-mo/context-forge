@@ -142,10 +142,10 @@ async function runSummaryWorker(): Promise<void> {
     const task = summaryQueue.shift()!
 
     try {
-      const result = await llmClient.generateSummary(task.turnIndex, task.messages)
+      const result = await llmClient.generateSummary(task.turnIndex, task.messages, task.sessionId)
 
-      // Save to global cache (by content hash)
-      summaryIndex.insert(result.summary, task.sessionId, task.contentHash)
+      // Save to global cache (by content hash) with messages
+      summaryIndex.insert(result.summary, task.sessionId, task.contentHash, result.messages)
 
       // Update in-memory state for all sessions that have this turn
       for (const [sid, store] of sessions) {
@@ -668,8 +668,10 @@ function syncSession(sessionId: string, messages: any[], store: SessionStore): a
     }
   }
 
-  // Trigger async generation for pending turns (only for new turns)
-  // New turns have index >= prevTurnCount (the count before this sync)
+  // Trigger async generation for pending turns.
+  // Only generate for new turns (index >= prevTurnCount) to avoid re-summarizing
+  // old turns on every sync. Old turns that were never summarized will remain
+  // pending but won't be retried unless the session is reset.
   for (const turn of pendingSummaries) {
     if (turn.index >= prevTurnCount) {
       triggerSummaryGeneration(sessionId, turn)

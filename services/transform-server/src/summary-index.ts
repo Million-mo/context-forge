@@ -1,11 +1,10 @@
 import Database from "better-sqlite3"
 import { resolve } from "path"
-import type { TurnSummary } from "./types.js"
+import type { TurnSummary, StoredMessage } from "./types.js"
 
 // ─── Schema ───────────────────────────────────────────────────────────────────
 
 const SCHEMA = `
-// Global cache: content hash -> summary (cross-session)
 CREATE TABLE IF NOT EXISTS global_summary_cache (
   content_hash  TEXT NOT NULL PRIMARY KEY,
   overview      TEXT NOT NULL,
@@ -20,10 +19,11 @@ CREATE TABLE IF NOT EXISTS global_summary_cache (
   generated_at  INTEGER NOT NULL,
   tokens_used   INTEGER DEFAULT 0,
   hit_count     INTEGER NOT NULL DEFAULT 1,
-  last_hit_at   INTEGER NOT NULL
+  last_hit_at   INTEGER NOT NULL,
+  start_msg_id  TEXT NOT NULL,
+  end_msg_id    TEXT NOT NULL
 );
 
-// Session-specific: session + turnIndex -> content_hash (for dedup within session)
 CREATE TABLE IF NOT EXISTS session_turn_summaries (
   session_id    TEXT NOT NULL,
   turn_index    INTEGER NOT NULL,
@@ -31,13 +31,25 @@ CREATE TABLE IF NOT EXISTS session_turn_summaries (
   PRIMARY KEY (session_id, turn_index)
 );
 
-CREATE INDEX IF NOT EXISTS idx_session_summaries_hash
-  ON session_turn_summaries(content_hash);
+CREATE INDEX IF NOT EXISTS idx_session_summaries_hash ON session_turn_summaries(content_hash);
+CREATE INDEX IF NOT EXISTS idx_session_summaries_session ON session_turn_summaries(session_id);
 
-CREATE INDEX IF NOT EXISTS idx_session_summaries_session
-  ON session_turn_summaries(session_id);
+CREATE TABLE IF NOT EXISTS turn_messages (
+  msg_id       TEXT NOT NULL PRIMARY KEY,
+  session_id   TEXT NOT NULL,
+  turn_index   INTEGER NOT NULL,
+  role         TEXT NOT NULL,
+  content      TEXT NOT NULL,
+  tool_calls   TEXT,
+  created_at   INTEGER NOT NULL,
+  seq_in_turn  INTEGER NOT NULL,
+  FOREIGN KEY (session_id, turn_index) REFERENCES session_turn_summaries(session_id, turn_index)
+);
 
-// FTS for search within summaries (optional enhancement)
+CREATE INDEX IF NOT EXISTS idx_messages_session ON turn_messages(session_id);
+CREATE INDEX IF NOT EXISTS idx_messages_turn ON turn_messages(session_id, turn_index);
+CREATE INDEX IF NOT EXISTS idx_messages_session_turn ON turn_messages(session_id, turn_index, seq_in_turn);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS summaries_fts USING fts5(
   content_hash UNINDEXED,
   overview,
@@ -47,7 +59,6 @@ CREATE VIRTUAL TABLE IF NOT EXISTS summaries_fts USING fts5(
   content_rowid='rowid'
 );
 
--- Keep FTS in sync
 CREATE TRIGGER IF NOT EXISTS summaries_ai AFTER INSERT ON global_summary_cache BEGIN
   INSERT INTO summaries_fts(rowid, content_hash, overview, intent, outcome)
   VALUES (new.rowid, new.content_hash, new.overview, new.intent, new.outcome);
@@ -63,6 +74,33 @@ CREATE TRIGGER IF NOT EXISTS summaries_au AFTER UPDATE ON global_summary_cache B
   VALUES ('delete', old.rowid, old.content_hash, old.overview, old.intent, old.outcome);
   INSERT INTO summaries_fts(rowid, content_hash, overview, intent, outcome)
   VALUES (new.rowid, new.content_hash, new.overview, new.intent, new.outcome);
+END;
+
+CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+  session_id UNINDEXED,
+  turn_index UNINDEXED,
+  role,
+  content,
+  tool_calls,
+  content='turn_messages',
+  content_rowid='rowid'
+);
+
+CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON turn_messages BEGIN
+  INSERT INTO messages_fts(rowid, session_id, turn_index, role, content, tool_calls)
+  VALUES (new.rowid, new.session_id, new.turn_index, new.role, new.content, new.tool_calls);
+END;
+
+CREATE TRIGGER IF NOT EXISTS messages_ad AFTER DELETE ON turn_messages BEGIN
+  INSERT INTO messages_fts(messages_fts, rowid, session_id, turn_index, role, content, tool_calls)
+  VALUES ('delete', old.rowid, old.session_id, old.turn_index, old.role, old.content, old.tool_calls);
+END;
+
+CREATE TRIGGER IF NOT EXISTS messages_au AFTER UPDATE ON turn_messages BEGIN
+  INSERT INTO messages_fts(messages_fts, rowid, session_id, turn_index, role, content, tool_calls)
+  VALUES ('delete', old.rowid, old.session_id, old.turn_index, old.role, old.content, old.tool_calls);
+  INSERT INTO messages_fts(rowid, session_id, turn_index, role, content, tool_calls)
+  VALUES (new.rowid, new.session_id, new.turn_index, new.role, new.content, new.tool_calls);
 END;
 `
 
@@ -122,19 +160,21 @@ export class SummaryIndex {
   }
 
   /**
-   * Store a generated summary.
-   * Saves to both global cache (by hash) and session index.
+   * Store a generated summary with its messages.
+   * Saves to both global cache (by hash) and session index, plus messages.
    */
-  insert(summary: TurnSummary, sessionId: string, contentHash: string): void {
+  insert(summary: TurnSummary, sessionId: string, contentHash: string, messages: StoredMessage[]): void {
     const tx = this.db.transaction(() => {
-      // Insert/update global cache
+      // Insert/update global cache with message IDs
       const cacheStmt = this.db.prepare(`
         INSERT OR REPLACE INTO global_summary_cache
           (content_hash, overview, intent, actions_json, artifacts_json,
-           outcome, errors_json, todos_json, confidence, reason, generated_at, tokens_used, last_hit_at)
+           outcome, errors_json, todos_json, confidence, reason, generated_at, 
+           tokens_used, last_hit_at, start_msg_id, end_msg_id)
         VALUES
           (@content_hash, @overview, @intent, @actions_json, @artifacts_json,
-           @outcome, @errors_json, @todos_json, @confidence, @reason, @generated_at, @tokens_used, @last_hit_at)
+           @outcome, @errors_json, @todos_json, @confidence, @reason, @generated_at,
+           @tokens_used, @last_hit_at, @start_msg_id, @end_msg_id)
       `)
 
       cacheStmt.run({
@@ -151,6 +191,8 @@ export class SummaryIndex {
         generated_at: summary.generatedAt,
         tokens_used: summary.tokensUsed || 0,
         last_hit_at: Date.now(),
+        start_msg_id: summary.startMsgId,
+        end_msg_id: summary.endMsgId,
       })
 
       // Insert session index
@@ -166,23 +208,74 @@ export class SummaryIndex {
         turn_index: summary.turnIndex,
         content_hash: contentHash,
       })
+
+      // Insert messages
+      const msgStmt = this.db.prepare(`
+        INSERT OR REPLACE INTO turn_messages
+          (msg_id, session_id, turn_index, role, content, tool_calls, created_at, seq_in_turn)
+        VALUES
+          (@msg_id, @session_id, @turn_index, @role, @content, @tool_calls, @created_at, @seq_in_turn)
+      `)
+
+      for (const msg of messages) {
+        msgStmt.run({
+          msg_id: msg.msgId,
+          session_id: msg.sessionId,
+          turn_index: msg.turnIndex,
+          role: msg.role,
+          content: msg.content,
+          tool_calls: msg.toolCalls ? JSON.stringify(msg.toolCalls) : null,
+          created_at: msg.createdAt,
+          seq_in_turn: msg.seqInTurn,
+        })
+      }
     })
 
     tx()
   }
 
   /**
-   * Batch insert summaries (for efficiency).
+   * Get messages for a turn by session and turn index.
    */
-  insertBatch(summaries: Array<{ summary: TurnSummary; sessionId: string; contentHash: string }>): void {
+  getMessages(sessionId: string, turnIndex: number): StoredMessage[] {
+    const stmt = this.db.prepare(`
+      SELECT * FROM turn_messages
+      WHERE session_id = ? AND turn_index = ?
+      ORDER BY seq_in_turn ASC
+    `)
+    
+    return (stmt.all(sessionId, turnIndex) as any[]).map((row) => this.rowToMessage(row))
+  }
+
+  /**
+   * Get messages by range (msgId).
+   */
+  getMessagesByRange(startMsgId: string, endMsgId: string): StoredMessage[] {
+    const stmt = this.db.prepare(`
+      SELECT * FROM turn_messages
+      WHERE msg_id >= ? AND msg_id <= ?
+      ORDER BY seq_in_turn ASC
+    `)
+    
+    return (stmt.all(startMsgId, endMsgId) as any[]).map((row) => this.rowToMessage(row))
+  }
+
+  /**
+   * Batch insert summaries with messages (for efficiency).
+   */
+  insertBatch(
+    summaries: Array<{ summary: TurnSummary; sessionId: string; contentHash: string; messages: StoredMessage[] }>
+  ): void {
     const tx = this.db.transaction(() => {
       const cacheStmt = this.db.prepare(`
         INSERT OR REPLACE INTO global_summary_cache
           (content_hash, overview, intent, actions_json, artifacts_json,
-           outcome, errors_json, todos_json, confidence, reason, generated_at, tokens_used, last_hit_at)
+           outcome, errors_json, todos_json, confidence, reason, generated_at,
+           tokens_used, last_hit_at, start_msg_id, end_msg_id)
         VALUES
           (@content_hash, @overview, @intent, @actions_json, @artifacts_json,
-           @outcome, @errors_json, @todos_json, @confidence, @reason, @generated_at, @tokens_used, @last_hit_at)
+           @outcome, @errors_json, @todos_json, @confidence, @reason, @generated_at,
+           @tokens_used, @last_hit_at, @start_msg_id, @end_msg_id)
       `)
 
       const idxStmt = this.db.prepare(`
@@ -192,7 +285,14 @@ export class SummaryIndex {
           (@session_id, @turn_index, @content_hash)
       `)
 
-      for (const { summary, sessionId, contentHash } of summaries) {
+      const msgStmt = this.db.prepare(`
+        INSERT OR REPLACE INTO turn_messages
+          (msg_id, session_id, turn_index, role, content, tool_calls, created_at, seq_in_turn)
+        VALUES
+          (@msg_id, @session_id, @turn_index, @role, @content, @tool_calls, @created_at, @seq_in_turn)
+      `)
+
+      for (const { summary, sessionId, contentHash, messages } of summaries) {
         cacheStmt.run({
           content_hash: contentHash,
           overview: summary.overview,
@@ -207,6 +307,8 @@ export class SummaryIndex {
           generated_at: summary.generatedAt,
           tokens_used: summary.tokensUsed || 0,
           last_hit_at: Date.now(),
+          start_msg_id: summary.startMsgId,
+          end_msg_id: summary.endMsgId,
         })
 
         idxStmt.run({
@@ -214,6 +316,19 @@ export class SummaryIndex {
           turn_index: summary.turnIndex,
           content_hash: contentHash,
         })
+
+        for (const msg of messages) {
+          msgStmt.run({
+            msg_id: msg.msgId,
+            session_id: msg.sessionId,
+            turn_index: msg.turnIndex,
+            role: msg.role,
+            content: msg.content,
+            tool_calls: msg.toolCalls ? JSON.stringify(msg.toolCalls) : null,
+            created_at: msg.createdAt,
+            seq_in_turn: msg.seqInTurn,
+          })
+        }
       }
     })
 
@@ -234,7 +349,7 @@ export class SummaryIndex {
   }
 
   /**
-   * Search summaries by content.
+   * Search summaries by content (FTS).
    */
   search(query: string, limit = 5): TurnSummary[] {
     if (!query.trim()) return []
@@ -259,6 +374,41 @@ export class SummaryIndex {
     return (stmt.all(ftsQuery, limit) as any[]).map((row) => this.rowToSummary(row))
   }
 
+  /**
+   * Search messages by content (FTS).
+   */
+  searchMessages(query: string, sessionId?: string, limit = 10): StoredMessage[] {
+    if (!query.trim()) return []
+
+    const escaped = query.replace(/['"*()\-:^~]/g, " ")
+    const ftsQuery = escaped.trim().split(/\s+/).filter(Boolean).map((w) => `"${w.replace(/"/g, '""')}"`).join(" ")
+
+    let stmt: any
+    try {
+      if (sessionId) {
+        stmt = this.db.prepare(`
+          SELECT m.* FROM turn_messages m
+          JOIN messages_fts f ON m.rowid = f.rowid
+          WHERE f.session_id = ? AND f.messages_fts MATCH ?
+          ORDER BY m.session_id, m.turn_index, m.seq_in_turn
+          LIMIT ?
+        `)
+        return (stmt.all(sessionId, ftsQuery, limit) as any[]).map((row) => this.rowToMessage(row))
+      } else {
+        stmt = this.db.prepare(`
+          SELECT m.* FROM turn_messages m
+          JOIN messages_fts f ON m.rowid = f.rowid
+          WHERE f.messages_fts MATCH ?
+          ORDER BY m.session_id, m.turn_index, m.seq_in_turn
+          LIMIT ?
+        `)
+        return (stmt.all(ftsQuery, limit) as any[]).map((row) => this.rowToMessage(row))
+      }
+    } catch {
+      return []
+    }
+  }
+
   private rowToSummary(row: any): TurnSummary {
     return {
       turnIndex: row.turn_index ?? 0,
@@ -273,21 +423,47 @@ export class SummaryIndex {
       reason: row.reason || undefined,
       generatedAt: row.generated_at,
       tokensUsed: row.tokens_used,
+      startMsgId: row.start_msg_id,
+      endMsgId: row.end_msg_id,
+    }
+  }
+
+  private rowToMessage(row: any): StoredMessage {
+    return {
+      msgId: row.msg_id,
+      sessionId: row.session_id,
+      turnIndex: row.turn_index,
+      role: row.role as "user" | "assistant" | "tool",
+      content: row.content,
+      toolCalls: row.tool_calls ? JSON.parse(row.tool_calls) : undefined,
+      createdAt: row.created_at,
+      seqInTurn: row.seq_in_turn,
     }
   }
 
   deleteSession(sessionId: string): void {
-    this.db.prepare("DELETE FROM session_turn_summaries WHERE session_id = ?").run(sessionId)
+    const tx = this.db.transaction(() => {
+      this.db.prepare("DELETE FROM turn_messages WHERE session_id = ?").run(sessionId)
+      this.db.prepare("DELETE FROM session_turn_summaries WHERE session_id = ?").run(sessionId)
+    })
+    tx()
   }
 
   /**
    * Get cache statistics.
    */
-  getStats(): { totalCacheEntries: number; totalHits: number } {
+  getStats(): { totalCacheEntries: number; totalHits: number; totalMessages: number } {
     const row = this.db.prepare(
       "SELECT COUNT(*) as totalCacheEntries, COALESCE(SUM(hit_count), 0) as totalHits FROM global_summary_cache"
     ).get() as any
-    return { totalCacheEntries: row.totalCacheEntries, totalHits: row.totalHits }
+    const msgRow = this.db.prepare(
+      "SELECT COUNT(*) as totalMessages FROM turn_messages"
+    ).get() as any
+    return { 
+      totalCacheEntries: row.totalCacheEntries, 
+      totalHits: row.totalHits,
+      totalMessages: msgRow.totalMessages,
+    }
   }
 
   close(): void {

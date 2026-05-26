@@ -1,4 +1,5 @@
-import type { LLMConfig, ParsedSummary, TurnSummary } from "./types.js"
+import { randomUUID } from "crypto"
+import type { LLMConfig, ParsedSummary, StoredMessage, TurnSummary } from "./types.js"
 
 // ─── Prompt Template ─────────────────────────────────────────────────────────
 
@@ -87,6 +88,60 @@ export interface LLMCallResult {
   summary: TurnSummary
   tokensUsed: number
   cached: boolean
+  messages: StoredMessage[]
+}
+
+export interface ToolCall {
+  name: string
+  input: string
+  output?: string
+}
+
+/**
+ * Convert raw messages to StoredMessage format with UUIDs.
+ */
+function toStoredMessages(turnIndex: number, sessionId: string, messages: any[]): StoredMessage[] {
+  return messages.map((msg, idx) => {
+    const role = (msg?.info?.role || msg?.role || "unknown") as "user" | "assistant" | "tool"
+    
+    // Extract text content
+    let content = ""
+    const toolCalls: ToolCall[] = []
+    
+    for (const part of msg.parts || []) {
+      if (part.type === "text") {
+        const text = (part.text || "").trim()
+        if (text) content += (content ? "\n" : "") + text
+      } else if (part.type === "tool") {
+        const toolName = part.tool || "unknown"
+        const state = part.state || {}
+        const input = JSON.stringify(state.input || {})
+        // Handle both string and non-string output (objects, arrays, etc.)
+        const output = typeof state.output === "string"
+          ? state.output
+          : JSON.stringify(state.output)
+        
+        toolCalls.push({ name: toolName, input, output })
+        
+        // Append tool output to content for serialization
+        const truncatedOutput = output.length > 500 
+          ? output.slice(0, 500) + "... [truncated]"
+          : output
+        content += (content ? "\n" : "") + `[tool: ${toolName}] ${truncatedOutput}`
+      }
+    }
+    
+    return {
+      msgId: randomUUID(),
+      sessionId,
+      turnIndex,
+      role,
+      content,
+      toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+      createdAt: Date.now(),
+      seqInTurn: idx,
+    }
+  })
 }
 
 export class LLMClient {
@@ -174,6 +229,7 @@ export class LLMClient {
   async generateSummary(
     turnIndex: number,
     messages: any[],
+    sessionId: string,
   ): Promise<LLMCallResult> {
     const serializedContent = serializeMessages(messages)
 
@@ -200,6 +256,11 @@ export class LLMClient {
 
     const parsed = this.parseResponse(raw)
 
+    // Convert messages to StoredMessage format
+    const storedMessages = toStoredMessages(turnIndex, sessionId, messages)
+    const startMsgId = storedMessages[0]?.msgId || ""
+    const endMsgId = storedMessages[storedMessages.length - 1]?.msgId || ""
+
     const summary: TurnSummary = {
       turnIndex,
       overview: parsed.overview,
@@ -213,9 +274,11 @@ export class LLMClient {
       reason: parsed.reason,
       generatedAt: Date.now(),
       tokensUsed,
+      startMsgId,
+      endMsgId,
     }
 
-    return { summary, tokensUsed, cached: false }
+    return { summary, tokensUsed, cached: false, messages: storedMessages }
   }
 
   private parseResponse(raw: string): ParsedSummary {

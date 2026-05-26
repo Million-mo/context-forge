@@ -26,6 +26,10 @@ export interface TurnSummary {
   reason?: string           // when outcome!=success or confidence<0.7
   generatedAt: number       // unix ms
   tokensUsed?: number
+  
+  // Message range for recall
+  startMsgId: string        // First message ID in this turn
+  endMsgId: string          // Last message ID in this turn
 }
 
 // ─── Server Configuration ─────────────────────────────────────────────────────
@@ -61,6 +65,25 @@ export interface AppConfig {
 // ─── LLM Configuration ────────────────────────────────────────────────────────
 
 export type LLMProvider = "openai" | "anthropic"
+
+// ─── Stored Message (for recall) ─────────────────────────────────────────────
+
+export interface ToolCall {
+  name: string
+  input: string           // JSON string, searchable
+  output?: string         // Tool output, searchable
+}
+
+export interface StoredMessage {
+  msgId: string           // UUID, primary key
+  sessionId: string
+  turnIndex: number
+  role: "user" | "assistant" | "tool"
+  content: string
+  toolCalls?: ToolCall[]  // For assistant messages
+  createdAt: number       // unix ms
+  seqInTurn: number       // Order within the turn
+}
 
 // ─── Summary Task Queue ──────────────────────────────────────────────────────
 
