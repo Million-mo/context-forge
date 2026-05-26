@@ -261,8 +261,13 @@ export class LLMClient {
 
 export function createLLMClient(llmConfig: LLMConfig): LLMClient | null {
   if (!llmConfig.apiKey) {
-    console.warn("[LLM] No apiKey set — summary generation disabled")
-    return null
+    const provider = llmConfig.provider || "openai"
+    // Some providers (e.g. local/self-hosted GLM) don't require authentication
+    if (provider === "anthropic") {
+      console.warn("[LLM] No apiKey set — summary generation disabled")
+      return null
+    }
+    console.warn("[LLM] No apiKey set — proceeding without authentication")
   }
 
   return new LLMClient(llmConfig)

@@ -27,3 +27,12 @@ target/
 
 .ctx_plugin/
 package-lock.json
+
+# IDE
+.cursor/
+
+# Local services
+services/summary-mcp/
+
+# Transform server runtime data (SQLite)
+services/transform-server/data/
