@@ -5,9 +5,9 @@ import type { TurnSummary } from "./types.js"
 // ─── Schema ───────────────────────────────────────────────────────────────────
 
 const SCHEMA = `
-CREATE TABLE IF NOT EXISTS turn_summaries (
-  session_id    TEXT NOT NULL,
-  turn_index    INTEGER NOT NULL,
+// Global cache: content hash -> summary (cross-session)
+CREATE TABLE IF NOT EXISTS global_summary_cache (
+  content_hash  TEXT NOT NULL PRIMARY KEY,
   overview      TEXT NOT NULL,
   intent        TEXT NOT NULL,
   actions_json  TEXT NOT NULL DEFAULT '[]',
@@ -19,95 +19,225 @@ CREATE TABLE IF NOT EXISTS turn_summaries (
   reason        TEXT,
   generated_at  INTEGER NOT NULL,
   tokens_used   INTEGER DEFAULT 0,
+  hit_count     INTEGER NOT NULL DEFAULT 1,
+  last_hit_at   INTEGER NOT NULL
+);
+
+// Session-specific: session + turnIndex -> content_hash (for dedup within session)
+CREATE TABLE IF NOT EXISTS session_turn_summaries (
+  session_id    TEXT NOT NULL,
+  turn_index    INTEGER NOT NULL,
+  content_hash  TEXT NOT NULL,
   PRIMARY KEY (session_id, turn_index)
 );
 
-CREATE INDEX IF NOT EXISTS idx_summaries_session
-  ON turn_summaries(session_id);
+CREATE INDEX IF NOT EXISTS idx_session_summaries_hash
+  ON session_turn_summaries(content_hash);
 
+CREATE INDEX IF NOT EXISTS idx_session_summaries_session
+  ON session_turn_summaries(session_id);
+
+// FTS for search within summaries (optional enhancement)
 CREATE VIRTUAL TABLE IF NOT EXISTS summaries_fts USING fts5(
-  session_id UNINDEXED,
-  turn_index UNINDEXED,
+  content_hash UNINDEXED,
   overview,
   intent,
   outcome,
-  content='turn_summaries',
+  content='global_summary_cache',
   content_rowid='rowid'
 );
 
 -- Keep FTS in sync
-CREATE TRIGGER IF NOT EXISTS summaries_ai AFTER INSERT ON turn_summaries BEGIN
-  INSERT INTO summaries_fts(rowid, session_id, turn_index, overview, intent, outcome)
-  VALUES (new.rowid, new.session_id, new.turn_index, new.overview, new.intent, new.outcome);
+CREATE TRIGGER IF NOT EXISTS summaries_ai AFTER INSERT ON global_summary_cache BEGIN
+  INSERT INTO summaries_fts(rowid, content_hash, overview, intent, outcome)
+  VALUES (new.rowid, new.content_hash, new.overview, new.intent, new.outcome);
 END;
 
-CREATE TRIGGER IF NOT EXISTS summaries_ad AFTER DELETE ON turn_summaries BEGIN
-  INSERT INTO summaries_fts(summaries_fts, rowid, session_id, turn_index, overview, intent, outcome)
-  VALUES ('delete', old.rowid, old.session_id, old.turn_index, old.overview, old.intent, old.outcome);
+CREATE TRIGGER IF NOT EXISTS summaries_ad AFTER DELETE ON global_summary_cache BEGIN
+  INSERT INTO summaries_fts(summaries_fts, rowid, content_hash, overview, intent, outcome)
+  VALUES ('delete', old.rowid, old.content_hash, old.overview, old.intent, old.outcome);
 END;
 
-CREATE TRIGGER IF NOT EXISTS summaries_au AFTER UPDATE ON turn_summaries BEGIN
-  INSERT INTO summaries_fts(summaries_fts, rowid, session_id, turn_index, overview, intent, outcome)
-  VALUES ('delete', old.rowid, old.session_id, old.turn_index, old.overview, old.intent, old.outcome);
-  INSERT INTO summaries_fts(rowid, session_id, turn_index, overview, intent, outcome)
-  VALUES (new.rowid, new.session_id, new.turn_index, new.overview, new.intent, new.outcome);
+CREATE TRIGGER IF NOT EXISTS summaries_au AFTER UPDATE ON global_summary_cache BEGIN
+  INSERT INTO summaries_fts(summaries_fts, rowid, content_hash, overview, intent, outcome)
+  VALUES ('delete', old.rowid, old.content_hash, old.overview, old.intent, old.outcome);
+  INSERT INTO summaries_fts(rowid, content_hash, overview, intent, outcome)
+  VALUES (new.rowid, new.content_hash, new.overview, new.intent, new.outcome);
 END;
 `
 
 // ─── Index ────────────────────────────────────────────────────────────────────
 
+export interface CachedSummary {
+  summary: TurnSummary
+  cached: boolean
+}
+
 export class SummaryIndex {
   private db: any
+  private getByHashStmt: any
+  private getHashStmt: any
+  private updateHitStmt: any
 
   constructor(dbPath?: string) {
     this.db = new (Database as any)(dbPath || ":memory:")
     this.db.exec("PRAGMA journal_mode=WAL;")
     this.db.exec(SCHEMA)
+
+    // Cache prepared statements for hot paths
+    this.getByHashStmt = this.db.prepare(
+      "SELECT * FROM global_summary_cache WHERE content_hash = ?"
+    )
+    this.getHashStmt = this.db.prepare(
+      "SELECT content_hash FROM session_turn_summaries WHERE session_id = ? AND turn_index = ?"
+    )
+    this.updateHitStmt = this.db.prepare(
+      "UPDATE global_summary_cache SET hit_count = hit_count + 1, last_hit_at = ? WHERE content_hash = ?"
+    )
   }
 
-  insert(summary: TurnSummary, sessionId: string): void {
-    const stmt = this.db.prepare(`
-      INSERT OR REPLACE INTO turn_summaries
-        (session_id, turn_index, overview, intent, actions_json, artifacts_json,
-         outcome, errors_json, todos_json, confidence, reason, generated_at, tokens_used)
-      VALUES
-        (@session_id, @turn_index, @overview, @intent, @actions_json, @artifacts_json,
-         @outcome, @errors_json, @todos_json, @confidence, @reason, @generated_at, @tokens_used)
-    `)
-
-    stmt.run({
-      session_id: sessionId,
-      turn_index: summary.turnIndex,
-      overview: summary.overview,
-      intent: summary.intent,
-      actions_json: JSON.stringify(summary.actions),
-      artifacts_json: JSON.stringify(summary.artifacts),
-      outcome: summary.outcome,
-      errors_json: JSON.stringify(summary.errors),
-      todos_json: JSON.stringify(summary.todos),
-      confidence: summary.confidence,
-      reason: summary.reason || null,
-      generated_at: summary.generatedAt,
-      tokens_used: summary.tokensUsed || 0,
-    })
-  }
-
-  get(sessionId: string, turnIndex: number): TurnSummary | null {
-    const stmt = this.db.prepare("SELECT * FROM turn_summaries WHERE session_id = ? AND turn_index = ?")
-    const row = stmt.get(sessionId, turnIndex) as any
+  /**
+   * Get summary by content hash (global cache lookup).
+   * Returns null if not cached.
+   */
+  getByHash(contentHash: string): TurnSummary | null {
+    const row = this.getByHashStmt.get(contentHash) as any
     if (!row) return null
+
+    // Update hit count and timestamp (fire-and-forget, non-critical)
+    this.updateHitStmt.run(Date.now(), contentHash)
+
     return this.rowToSummary(row)
   }
 
+  /**
+   * Get summary by session and turn index.
+   * Returns null if not cached.
+   */
+  get(sessionId: string, turnIndex: number): TurnSummary | null {
+    const hashRow = this.getHashStmt.get(sessionId, turnIndex) as any
+    if (!hashRow) return null
+
+    return this.getByHash(hashRow.content_hash)
+  }
+
+  /**
+   * Store a generated summary.
+   * Saves to both global cache (by hash) and session index.
+   */
+  insert(summary: TurnSummary, sessionId: string, contentHash: string): void {
+    const tx = this.db.transaction(() => {
+      // Insert/update global cache
+      const cacheStmt = this.db.prepare(`
+        INSERT OR REPLACE INTO global_summary_cache
+          (content_hash, overview, intent, actions_json, artifacts_json,
+           outcome, errors_json, todos_json, confidence, reason, generated_at, tokens_used, last_hit_at)
+        VALUES
+          (@content_hash, @overview, @intent, @actions_json, @artifacts_json,
+           @outcome, @errors_json, @todos_json, @confidence, @reason, @generated_at, @tokens_used, @last_hit_at)
+      `)
+
+      cacheStmt.run({
+        content_hash: contentHash,
+        overview: summary.overview,
+        intent: summary.intent,
+        actions_json: JSON.stringify(summary.actions),
+        artifacts_json: JSON.stringify(summary.artifacts),
+        outcome: summary.outcome,
+        errors_json: JSON.stringify(summary.errors),
+        todos_json: JSON.stringify(summary.todos),
+        confidence: summary.confidence,
+        reason: summary.reason || null,
+        generated_at: summary.generatedAt,
+        tokens_used: summary.tokensUsed || 0,
+        last_hit_at: Date.now(),
+      })
+
+      // Insert session index
+      const idxStmt = this.db.prepare(`
+        INSERT OR REPLACE INTO session_turn_summaries
+          (session_id, turn_index, content_hash)
+        VALUES
+          (@session_id, @turn_index, @content_hash)
+      `)
+
+      idxStmt.run({
+        session_id: sessionId,
+        turn_index: summary.turnIndex,
+        content_hash: contentHash,
+      })
+    })
+
+    tx()
+  }
+
+  /**
+   * Batch insert summaries (for efficiency).
+   */
+  insertBatch(summaries: Array<{ summary: TurnSummary; sessionId: string; contentHash: string }>): void {
+    const tx = this.db.transaction(() => {
+      const cacheStmt = this.db.prepare(`
+        INSERT OR REPLACE INTO global_summary_cache
+          (content_hash, overview, intent, actions_json, artifacts_json,
+           outcome, errors_json, todos_json, confidence, reason, generated_at, tokens_used, last_hit_at)
+        VALUES
+          (@content_hash, @overview, @intent, @actions_json, @artifacts_json,
+           @outcome, @errors_json, @todos_json, @confidence, @reason, @generated_at, @tokens_used, @last_hit_at)
+      `)
+
+      const idxStmt = this.db.prepare(`
+        INSERT OR REPLACE INTO session_turn_summaries
+          (session_id, turn_index, content_hash)
+        VALUES
+          (@session_id, @turn_index, @content_hash)
+      `)
+
+      for (const { summary, sessionId, contentHash } of summaries) {
+        cacheStmt.run({
+          content_hash: contentHash,
+          overview: summary.overview,
+          intent: summary.intent,
+          actions_json: JSON.stringify(summary.actions),
+          artifacts_json: JSON.stringify(summary.artifacts),
+          outcome: summary.outcome,
+          errors_json: JSON.stringify(summary.errors),
+          todos_json: JSON.stringify(summary.todos),
+          confidence: summary.confidence,
+          reason: summary.reason || null,
+          generated_at: summary.generatedAt,
+          tokens_used: summary.tokensUsed || 0,
+          last_hit_at: Date.now(),
+        })
+
+        idxStmt.run({
+          session_id: sessionId,
+          turn_index: summary.turnIndex,
+          content_hash: contentHash,
+        })
+      }
+    })
+
+    tx()
+  }
+
+  /**
+   * List all summaries for a session.
+   */
   listBySession(sessionId: string): TurnSummary[] {
-    const stmt = this.db.prepare(
-      "SELECT * FROM turn_summaries WHERE session_id = ? ORDER BY turn_index ASC"
-    )
+    const stmt = this.db.prepare(`
+      SELECT c.* FROM global_summary_cache c
+      JOIN session_turn_summaries s ON c.content_hash = s.content_hash
+      WHERE s.session_id = ?
+      ORDER BY s.turn_index ASC
+    `)
     return (stmt.all(sessionId) as any[]).map((row) => this.rowToSummary(row))
   }
 
-  search(sessionId: string, query: string, limit = 5): TurnSummary[] {
-    if (!query.trim()) return this.listBySession(sessionId).slice(-limit)
+  /**
+   * Search summaries by content.
+   */
+  search(query: string, limit = 5): TurnSummary[] {
+    if (!query.trim()) return []
 
     const escaped = query.replace(/['"*()\-:^~]/g, " ")
     const ftsQuery = escaped.trim().split(/\s+/).filter(Boolean).map((w) => `"${w.replace(/"/g, '""')}"`).join(" ")
@@ -115,22 +245,23 @@ export class SummaryIndex {
     let stmt: any
     try {
       stmt = this.db.prepare(`
-        SELECT s.* FROM turn_summaries s
-        JOIN summaries_fts f ON s.rowid = f.rowid
-        WHERE f.session_id = ? AND summaries_fts MATCH ?
-        ORDER BY rank
+        SELECT * FROM global_summary_cache
+        WHERE content_hash IN (
+          SELECT content_hash FROM summaries_fts WHERE summaries_fts MATCH ?
+        )
+        ORDER BY hit_count DESC, last_hit_at DESC
         LIMIT ?
       `)
     } catch {
       return []
     }
 
-    return (stmt.all(sessionId, ftsQuery, limit) as any[]).map((row) => this.rowToSummary(row))
+    return (stmt.all(ftsQuery, limit) as any[]).map((row) => this.rowToSummary(row))
   }
 
   private rowToSummary(row: any): TurnSummary {
     return {
-      turnIndex: row.turn_index,
+      turnIndex: row.turn_index ?? 0,
       overview: row.overview,
       intent: row.intent,
       actions: JSON.parse(row.actions_json),
@@ -146,7 +277,17 @@ export class SummaryIndex {
   }
 
   deleteSession(sessionId: string): void {
-    this.db.prepare("DELETE FROM turn_summaries WHERE session_id = ?").run(sessionId)
+    this.db.prepare("DELETE FROM session_turn_summaries WHERE session_id = ?").run(sessionId)
+  }
+
+  /**
+   * Get cache statistics.
+   */
+  getStats(): { totalCacheEntries: number; totalHits: number } {
+    const row = this.db.prepare(
+      "SELECT COUNT(*) as totalCacheEntries, COALESCE(SUM(hit_count), 0) as totalHits FROM global_summary_cache"
+    ).get() as any
+    return { totalCacheEntries: row.totalCacheEntries, totalHits: row.totalHits }
   }
 
   close(): void {

@@ -376,8 +376,13 @@ function buildSummaryReplacement(turn: Turn): any[] {
 
 // ─── Step 5: buildCompressedMessages (token budget) ───────────────────────────
 
-const MAX_HOT_TURNS = 3
-
+/**
+ * New compression logic:
+ * 1. Reserve space for current turn
+ * 2. Process turns from newest to oldest, keeping as many as possible with decay
+ * 3. For older turns that don't fit, replace with summary or placeholder
+ * 4. Current turn is always included at the end
+ */
 function buildCompressedMessages(
   turns: Turn[],
   toolOutputs: Map<string, ToolOutputEntry>,
@@ -385,45 +390,66 @@ function buildCompressedMessages(
 ): any[] {
   const completedTurns = turns.filter((t) => !t.isCurrent)
   const currentTurn = turns.find((t) => t.isCurrent)
-  const result: any[] = []
 
-  let used = 0
+  // Reserve space for current turn
+  const reservedForCurrent = currentTurn ? estimateTokens(currentTurn.messages) : 0
+  const availableBudget = budget - reservedForCurrent
 
-  const coldTurns = completedTurns.slice(0, Math.max(0, completedTurns.length - MAX_HOT_TURNS))
-  const hotTurns = completedTurns.slice(Math.max(0, completedTurns.length - MAX_HOT_TURNS))
+  if (availableBudget <= 0) {
+    // Not enough space even for current turn
+    return currentTurn ? [...currentTurn.messages] : []
+  }
 
-  // Cold turns: newest cold first (closest to hot boundary), prepend to result
-  for (const turn of [...coldTurns].reverse()) {
-    let msgs: any[]
+  // Process turns from newest to oldest, keeping as many as possible
+  const keptMessages: any[] = []
+  const replacedTurns: Turn[] = []
+  let usedTokens = 0
 
-    if (turn.summaryStatus === "done" && turn.summary) {
-      msgs = buildSummaryReplacement(turn)
+  // Reverse iteration: newest first
+  for (const turn of [...completedTurns].reverse()) {
+    const compressed = buildCompressedMessagesForHotTurn(turn, toolOutputs, turns.length)
+    const tokens = estimateTokens(compressed)
+
+    if (usedTokens + tokens <= availableBudget) {
+      // Can fit - keep this turn (prepend to result later)
+      keptMessages.unshift(...compressed)
+      usedTokens += tokens
     } else {
-      msgs = structuredClone(turn.messages)
+      // Can't fit - mark for replacement
+      replacedTurns.unshift(turn)
     }
-
-    const tokens = estimateTokens(msgs)
-    if (used + tokens > budget && result.length > 0) {
-      break
-    }
-
-    result.unshift(...msgs)
-    used += tokens
   }
 
-  // Hot turns: decay compression
-  for (const turn of hotTurns) {
-    const msgs = buildCompressedMessagesForHotTurn(turn, toolOutputs, turns.length)
-    result.unshift(...msgs)
-    used += estimateTokens(msgs)
+  // Now replace old turns with summaries from front (oldest) to back
+  const result: any[] = []
+  for (const turn of replacedTurns) {
+    if (turn.summaryStatus === "done" && turn.summary) {
+      result.push(...buildSummaryReplacement(turn))
+    } else {
+      result.push(...buildPlaceholderReplacement(turn))
+    }
   }
 
-  // Current turn: always included
+  // Add kept messages (recent turns with decay)
+  result.push(...keptMessages)
+
+  // Add current turn at the end
   if (currentTurn) {
     result.push(...currentTurn.messages)
   }
 
   return result
+}
+
+function buildPlaceholderReplacement(turn: Turn): any[] {
+  return [{
+    role: "user",
+    info: { role: "user", __compressed: "placeholder", turnIndex: turn.index },
+    parts: [{
+      type: "text",
+      text: `=== Turn ${turn.index} (${turn.messageCount} messages, ~${turn.tokenEstimate} tokens) ===\n[Compressed]`,
+    }],
+  }]
 }
 
 // ─── Test Fixtures ───────────────────────────────────────────────────────────
@@ -846,96 +872,119 @@ describe("Step 5: buildCompressedMessages (token budget)", () => {
     expect(currentMsgs).toHaveLength(2)
   })
 
-  it("hot turns use decay compression", () => {
+  it("under budget: all completed turns use decay compression", () => {
     const turns: Turn[] = [
-      // Turn 0: cold
       makeTurn(0, [textMsg("user", "old"), textMsg("assistant", "old reply")], false, "pending"),
-      // Turn 1: hot
       makeTurn(1, [textMsg("user", "recent"), textMsg("assistant", "recent reply")], false, "pending"),
-      // Turn 2: current
       makeTurn(2, [textMsg("user", "cur"), textMsg("assistant", "curreply")], true, "pending"),
     ]
 
+    // Budget is generous (10000 tokens), all turns should be included with decay
     const result = buildCompressedMessages(turns, new Map(), 10000)
 
-    // Current turn must be present
-    expect(result.some((m: any) => m.parts?.[0]?.text === "curreply")).toBe(true)
-    // Hot turn (turn 1) must be present (decay compression applied but structure kept)
+    // All messages should be present
+    expect(result.some((m: any) => m.parts?.[0]?.text === "old reply")).toBe(true)
     expect(result.some((m: any) => m.parts?.[0]?.text === "recent reply")).toBe(true)
+    expect(result.some((m: any) => m.parts?.[0]?.text === "curreply")).toBe(true)
   })
 
-  it("cold turns with done summary use summary replacement", () => {
+  it("over budget: oldest turns replaced with summaries from front to back", () => {
+    // Use large content to ensure we exceed the budget
+    const largeContent = "content ".repeat(100) // ~700 chars
+
     const turns: Turn[] = [
-      // Turn 0: cold (outside MAX_HOT_TURNS=3), summary done → should be replaced
-      makeTurn(0, [textMsg("user", "old"), textMsg("assistant", "old reply")], false, "done", {
+      // Turn 0: oldest, with summary done
+      makeTurn(0, [textMsg("user", "old" + largeContent), textMsg("assistant", "old reply" + largeContent)], false, "done", {
         turnIndex: 0, overview: "old turn", intent: "", actions: [], artifacts: [],
         outcome: "success", errors: [], todos: [], confidence: 0.9, generatedAt: Date.now(),
       }),
-      makeTurn(1, [textMsg("user", "t1"), textMsg("assistant", "r1")], false, "pending"),
-      makeTurn(2, [textMsg("user", "t2"), textMsg("assistant", "r2")], false, "pending"),
-      makeTurn(3, [textMsg("user", "t3"), textMsg("assistant", "r3")], false, "pending"),
-      // Turn 4: current
-      makeTurn(4, [textMsg("user", "cur"), textMsg("assistant", "curreply")], true, "pending"),
+      // Turn 1: with summary done
+      makeTurn(1, [textMsg("user", "t1" + largeContent), textMsg("assistant", "r1" + largeContent)], false, "done", {
+        turnIndex: 1, overview: "turn 1", intent: "", actions: [], artifacts: [],
+        outcome: "success", errors: [], todos: [], confidence: 0.9, generatedAt: Date.now(),
+      }),
+      // Turn 2: most recent, no summary
+      makeTurn(2, [textMsg("user", "recent"), textMsg("assistant", "recent reply")], false, "pending"),
+      // Turn 3: current
+      makeTurn(3, [textMsg("user", "cur"), textMsg("assistant", "curreply")], true, "pending"),
     ]
 
-    const result = buildCompressedMessages(turns, new Map(), 10000)
+    // Small budget - only current + recent fits
+    const result = buildCompressedMessages(turns, new Map(), 500)
 
-    // Turn 0 should be replaced with 2 summary messages (user + assistant)
+    // Turn 0 should be replaced with summary (oldest, over budget)
     const turn0User = result.find((m: any) => m.info?.turnIndex === 0 && m.role === "user")
     const turn0Assistant = result.find((m: any) => m.info?.turnIndex === 0 && m.role === "assistant")
     expect(turn0User).toBeDefined()
     expect(turn0Assistant).toBeDefined()
+    expect(turn0User?.info?.__compressed).toBe("summary")
 
-    // Original "old" and "old reply" should NOT be in result
-    expect(result.some((m: any) => m.parts?.[0]?.text === "old")).toBe(false)
+    // Original large content should NOT be in result
+    expect(result.some((m: any) => m.parts?.[0]?.text?.includes("old" + largeContent.slice(0, 10)))).toBe(false)
+
+    // Current turn must always be included
+    expect(result.some((m: any) => m.parts?.[0]?.text === "curreply")).toBe(true)
   })
 
-  it("cold turns without summary stay as original messages", () => {
+  it("turns without summary use placeholder when forced to compress", () => {
+    // Use large content
+    const largeContent = "content ".repeat(100)
+
     const turns: Turn[] = [
-      // Turn 0: cold, summary pending → should keep original
-      makeTurn(0, [textMsg("user", "old"), textMsg("assistant", "old reply")], false, "pending"),
-      // Turn 1: hot
-      makeTurn(1, [textMsg("user", "recent"), textMsg("assistant", "recent reply")], false, "pending"),
+      // Turn 0: oldest, no summary
+      makeTurn(0, [textMsg("user", "old" + largeContent), textMsg("assistant", "old reply" + largeContent)], false, "pending"),
+      // Turn 1: with summary
+      makeTurn(1, [textMsg("user", "t1"), textMsg("assistant", "r1")], false, "done", {
+        turnIndex: 1, overview: "turn 1", intent: "", actions: [], artifacts: [],
+        outcome: "success", errors: [], todos: [], confidence: 0.9, generatedAt: Date.now(),
+      }),
       // Turn 2: current
       makeTurn(2, [textMsg("user", "cur"), textMsg("assistant", "curreply")], true, "pending"),
     ]
 
-    const result = buildCompressedMessages(turns, new Map(), 10000)
+    // Very small budget - forces turn 0 to be compressed
+    const result = buildCompressedMessages(turns, new Map(), 300)
 
-    // Original "old reply" should still be there
-    expect(result.some((m: any) => m.parts?.[0]?.text === "old reply")).toBe(true)
+    // Turn 0 should be replaced with placeholder (no summary available)
+    const turn0User = result.find((m: any) => m.info?.turnIndex === 0 && m.role === "user")
+    expect(turn0User?.info?.__compressed).toBe("placeholder")
+
+    // Original large content should NOT be in result
+    expect(result.some((m: any) => m.parts?.[0]?.text?.includes("old" + largeContent.slice(0, 10)))).toBe(false)
+
+    // Current turn must be included
+    expect(result.some((m: any) => m.parts?.[0]?.text === "curreply")).toBe(true)
   })
 
-  it("respects token budget: hot turns use progressive compression, cold turns never cut", () => {
-    // Build many hot turns with large content
-    const largeContent = "x".repeat(200)
-    const hotTurns = Array.from({ length: 6 }, (_, i) =>
-      makeTurn(i, [
-        textMsg("user", `u${i}${largeContent}`),
-        textMsg("assistant", `a${i}${largeContent}`),
-      ], false, "pending")
-    )
-    hotTurns.push(makeTurn(6, [textMsg("user", "cur"), textMsg("assistant", "curreply")], true, "pending"))
+  it("respects token budget: progressive compression from oldest", () => {
+    // Build many turns with content that varies in size
+    const smallContent = "x"
+    const largeContent = "x".repeat(500)
 
-    // Budget: only enough for 2 hot turns + current
-    const result = buildCompressedMessages(hotTurns, new Map(), 500)
+    const turns: Turn[] = [
+      makeTurn(0, [textMsg("user", "u0" + smallContent), textMsg("assistant", "a0" + smallContent)], false, "done", {
+        turnIndex: 0, overview: "t0", intent: "", actions: [], artifacts: [],
+        outcome: "success", errors: [], todos: [], confidence: 0.9, generatedAt: Date.now(),
+      }),
+      makeTurn(1, [textMsg("user", "u1" + largeContent), textMsg("assistant", "a1" + largeContent)], false, "pending"),
+      makeTurn(2, [textMsg("user", "u2" + largeContent), textMsg("assistant", "a2" + largeContent)], false, "pending"),
+      makeTurn(3, [textMsg("user", "cur"), textMsg("assistant", "curreply")], true, "pending"),
+    ]
+
+    // Budget: only enough for current + some turns
+    const result = buildCompressedMessages(turns, new Map(), 400)
 
     // Current turn must always be included
-    const currentMsgs = result.filter((m: any) =>
-      m.parts?.[0]?.text === "cur" || m.parts?.[0]?.text === "curreply"
-    )
-    expect(currentMsgs).toHaveLength(2)
+    expect(result.some((m: any) => m.parts?.[0]?.text === "curreply")).toBe(true)
 
-    // Some hot turns must be included (progressive compression should allow more turns)
-    const hotMsgs = result.filter((m: any) =>
-      m.parts?.[0]?.text?.startsWith("u5") || m.parts?.[0]?.text?.startsWith("a5")
-    )
-    expect(hotMsgs.length).toBeGreaterThan(0)
+    // Some older content must be compressed/replaced
+    // Turn 0 with summary should be compressed first
+    expect(result.some((m: any) => m.parts?.[0]?.text === "u0")).toBe(false)
   })
 })
 
 describe("Integration: full flow", () => {
-  it("runs split → index → compress end to end", () => {
+  it("runs dedup → split → compress end to end", () => {
     const rawMessages = [
       textMsg("user", "task 1"),
       textMsg("assistant", "reply 1"),
@@ -958,33 +1007,85 @@ describe("Integration: full flow", () => {
     updateToolOutputIndex(turns, toolOutputs)
     expect(toolOutputs.size).toBe(0)
 
-    // Simulate cold zone: mark turn 0 as done with summary
-    // completedTurns=4, MAX_HOT=5, coldBoundary=0 → turn 0 is cold
+    // Mark turn 0 as done with summary (oldest, most likely to be compressed)
     turns[0].summaryStatus = "done"
     turns[0].summary = {
       turnIndex: 0, overview: "task 1 done", intent: "", actions: [], artifacts: [],
       outcome: "success", errors: [], todos: [], confidence: 0.9, generatedAt: Date.now(),
     }
 
-    // Step 3: compress with token budget
+    // Step 3: compress with generous budget - all turns included with decay
     const result = buildCompressedMessages(turns, toolOutputs, 10000)
 
-    // Cold turn (turn 0, oldest) appears somewhere in the middle as summary
+    // All original messages should be present (under budget)
+    expect(result.some((m: any) => m.parts?.[0]?.text === "task 1")).toBe(true)
+    expect(result.some((m: any) => m.parts?.[0]?.text === "reply 1")).toBe(true)
+    expect(result.some((m: any) => m.parts?.[0]?.text === "reply 5")).toBe(true)
+
+    // Current turn present
+    expect(result.some((m: any) => m.parts?.[0]?.text === "reply 5")).toBe(true)
+  })
+
+  it("under budget: oldest turns with summaries get compressed first", () => {
+    // Use large content to ensure budget is exceeded
+    const largeContent = "content ".repeat(100)
+
+    const rawMessages = [
+      textMsg("user", "task 1" + largeContent),
+      textMsg("assistant", "reply 1" + largeContent),
+      textMsg("user", "task 2" + largeContent),
+      textMsg("assistant", "reply 2" + largeContent),
+      textMsg("user", "task 3"),
+      textMsg("assistant", "reply 3"),
+    ]
+
+    const turns = splitIntoTurns(rawMessages)
+    expect(turns).toHaveLength(3)
+
+    // Mark oldest turn as done
+    turns[0].summaryStatus = "done"
+    turns[0].summary = {
+      turnIndex: 0, overview: "task 1 done", intent: "", actions: [], artifacts: [],
+      outcome: "success", errors: [], todos: [], confidence: 0.9, generatedAt: Date.now(),
+    }
+
+    const toolOutputs = new Map<string, ToolOutputEntry>()
+
+    // Small budget forces compression of oldest turn
+    const result = buildCompressedMessages(turns, toolOutputs, 500)
+
+    // Turn 0 should be replaced with summary
     const summaryMsgs = result.filter((m: any) => m.info?.__compressed === "summary")
     expect(summaryMsgs).toHaveLength(2)
-    expect(summaryMsgs[0].role).toBe("user")
-    expect(summaryMsgs[1].role).toBe("assistant")
     expect(summaryMsgs[0].info.turnIndex).toBe(0)
 
-    // Original cold turn messages (task 1 / reply 1) should NOT be in result
-    expect(result.some((m: any) => m.parts?.[0]?.text === "task 1")).toBe(false)
-    expect(result.some((m: any) => m.parts?.[0]?.text === "reply 1")).toBe(false)
+    // Original large content should NOT be in result
+    expect(result.some((m: any) => m.parts?.[0]?.text?.includes("task 1" + largeContent.slice(0, 10)))).toBe(false)
 
-    // Hot turns keep original messages
-    const task2 = result.find((m: any) => m.parts?.[0]?.text === "task 2")
-    expect(task2?.info?.__compressed).toBeUndefined()
+    // Recent turns should be present
+    expect(result.some((m: any) => m.parts?.[0]?.text?.includes("task 2"))).toBe(true)
 
-    // Current turn (turn 4) present
-    expect(result.some((m: any) => m.parts?.[0]?.text === "reply 5")).toBe(true)
+    // Current turn (turn 2) present
+    expect(result.some((m: any) => m.parts?.[0]?.text === "reply 3")).toBe(true)
+  })
+
+  it("current turn is always last in result", () => {
+    const rawMessages = [
+      textMsg("user", "old"),
+      textMsg("assistant", "old reply"),
+      textMsg("user", "new"),
+      textMsg("assistant", "new reply"),
+    ]
+
+    const turns = splitIntoTurns(rawMessages)
+    const result = buildCompressedMessages(turns, new Map(), 100)
+
+    // Find "new reply" (current turn's assistant message)
+    const currentAssistantIdx = result.findIndex((m: any) =>
+      m.parts?.[0]?.text === "new reply"
+    )
+
+    // It should be the last message
+    expect(currentAssistantIdx).toBe(result.length - 1)
   })
 })

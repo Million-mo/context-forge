@@ -76,12 +76,22 @@ const CACHEABLE_TOOLS: Set<string> = new Set([
 
 const sessions = new Map<string, SessionStore>()
 
-// ─── Summary Generation ──────────────────────────────────────────────────────
+// ─── Summary Generation (Async, Cached) ────────────────────────────────────────
 
 const llmClient: LLMClient | null = createLLMClient(config.llm)
 const summaryIndex = new SummaryIndex(resolve(process.cwd(), "data/summaries.db"))
-const summaryQueue: Array<{ sessionId: string; turn: Turn }> = []
-const MAX_SUMMARY_RETRIES = 2
+
+// Queue for turns that need summary generation (by content hash)
+type SummaryTask = {
+  sessionId: string
+  turnIndex: number
+  contentHash: string
+  messages: any[]
+  createdAt: number
+}
+const summaryQueue: SummaryTask[] = []
+const MAX_QUEUE_SIZE = 1000
+const MAX_TASK_AGE_MS = 30 * 60 * 1000 // 30 minutes
 
 setInterval(() => {
   runSummaryWorker().catch((err) =>
@@ -89,43 +99,97 @@ setInterval(() => {
   )
 }, 1_000)
 
+/**
+ * Add task to queue with deduplication.
+ */
+function enqueueSummaryTask(task: Omit<SummaryTask, "createdAt">): boolean {
+  // Check queue size limit
+  if (summaryQueue.length >= MAX_QUEUE_SIZE) {
+    console.warn(`[summary] queue full (${MAX_QUEUE_SIZE}), dropping oldest`)
+    summaryQueue.shift()
+  }
+
+  // Deduplicate by contentHash
+  if (summaryQueue.some((t) => t.contentHash === task.contentHash)) {
+    return false // Already queued
+  }
+
+  summaryQueue.push({ ...task, createdAt: Date.now() })
+  return true
+}
+
+/**
+ * Clean up stale tasks periodically.
+ */
+setInterval(() => {
+  const now = Date.now()
+  const before = summaryQueue.length
+  // Remove tasks older than MAX_TASK_AGE_MS
+  const filtered = summaryQueue.filter((t) => now - t.createdAt < MAX_TASK_AGE_MS)
+  summaryQueue.length = 0
+  summaryQueue.push(...filtered)
+
+  if (summaryQueue.length < before) {
+    console.log(`[summary] cleaned ${before - summaryQueue.length} stale tasks`)
+  }
+}, 5 * 60 * 1000) // Every 5 minutes
+
 async function runSummaryWorker(): Promise<void> {
   if (!llmClient) return
   if (summaryQueue.length === 0) return
 
   while (summaryQueue.length > 0) {
     const task = summaryQueue.shift()!
-    const store = sessions.get(task.sessionId)
-    if (!store) continue
-
-    const turn = store.turns.find((t) => t.index === task.turn.index && !t.isCurrent)
-    if (!turn) continue
-    if (turn.summaryStatus !== "pending") continue
-
-    turn.summaryStatus = "generating"
 
     try {
-      const result = await llmClient.generateSummary(turn.index, turn.messages)
-      turn.summary = result.summary
-      turn.summaryStatus = "done"
-      summaryIndex.insert(result.summary, task.sessionId)
+      const result = await llmClient.generateSummary(task.turnIndex, task.messages)
+
+      // Save to global cache (by content hash)
+      summaryIndex.insert(result.summary, task.sessionId, task.contentHash)
+
+      // Update in-memory state for all sessions that have this turn
+      for (const [sid, store] of sessions) {
+        const turn = store.turns.find((t) => t.index === task.turnIndex && !t.isCurrent)
+        if (turn && turn.contentHash === task.contentHash) {
+          turn.summary = result.summary
+          turn.summaryStatus = "done"
+        }
+      }
 
       console.log(
-        `[summary] turn=${turn.index} session=${task.sessionId.slice(0, 8)}.. ` +
+        `[summary] turn=${task.turnIndex} hash=${task.contentHash.slice(0, 8)}.. ` +
         `outcome=${result.summary.outcome} confidence=${result.summary.confidence} ` +
         `tokens=${result.tokensUsed}`,
       )
     } catch (err) {
-      console.error(`[summary] failed turn=${turn.index}:`, err)
-      const retries = (turn as any)._summaryRetries ?? 0
-      if (retries < MAX_SUMMARY_RETRIES) {
-        ;(turn as any)._summaryRetries = retries + 1
-        turn.summaryStatus = "pending"
-        summaryQueue.push(task)
-      } else {
-        turn.summaryStatus = "unavailable"
-      }
+      console.error(`[summary] failed turn=${task.turnIndex} hash=${task.contentHash.slice(0, 8)}..:`, err)
     }
+  }
+}
+
+/**
+ * Lookup summary by content hash (fast path).
+ */
+function getCachedSummary(contentHash: string): TurnSummary | null {
+  return summaryIndex.getByHash(contentHash)
+}
+
+/**
+ * Trigger async summary generation for a turn.
+ */
+function triggerSummaryGeneration(sessionId: string, turn: Turn): void {
+  if (turn.summaryStatus !== "pending") return
+  if (turn.isCurrent) return // Don't generate for current turn
+
+  const queued = enqueueSummaryTask({
+    sessionId,
+    turnIndex: turn.index,
+    contentHash: turn.contentHash,
+    messages: turn.messages,
+  })
+
+  if (queued) {
+    turn.summaryStatus = "generating"
   }
 }
 
@@ -478,33 +542,8 @@ function buildSummaryReplacement(turn: Turn): any[] {
 // ─── Token Budget ────────────────────────────────────────────────────────────
 
 /**
- * Progressive compression levels for hot turns when budget is tight.
- * L1 → L2 → L3 (increasing compression)
+ * Build a placeholder message for a turn without summary.
  */
-type CompressionTier = "decay" | "summary" | "placeholder"
-
-function buildCompressedForTier(
-  turn: Turn,
-  toolOutputs: Map<string, ToolOutputEntry>,
-  currentTurnIdx: number,
-  tier: CompressionTier,
-): any[] {
-  switch (tier) {
-    case "decay":
-      return buildCompressedMessagesForHotTurn(turn, toolOutputs, currentTurnIdx)
-
-    case "summary":
-      if (turn.summaryStatus === "done" && turn.summary) {
-        return buildSummaryReplacement(turn)
-      }
-      // Fall through to placeholder if no summary
-      return buildPlaceholderReplacement(turn)
-
-    case "placeholder":
-      return buildPlaceholderReplacement(turn)
-  }
-}
-
 function buildPlaceholderReplacement(turn: Turn): any[] {
   return [{
     role: "user",
@@ -519,12 +558,16 @@ function buildPlaceholderReplacement(turn: Turn): any[] {
 /**
  * Build the final message array with progressive compression.
  *
- * Strategy (oldest → newest):
- * 1. Cold turns: always added, already summary-compressed
- * 2. Hot turns: from newest to oldest, try L1 (decay) first
- *    - If budget exceeded: try L2 (summary)
- *    - If still exceeded: use L3 (placeholder)
- * 3. Current turn: always added last
+ * Correct order:
+ * 1. Reserve space for current turn
+ * 2. Process turns from newest to oldest, keeping as many as possible with decay
+ * 3. For older turns that don't fit, replace with summary or placeholder
+ * 4. Current turn is always included at the end
+ *
+ * @param turns - Pre-processed turns (tool dedup already applied to messages)
+ * @param toolOutputs - Tool output cache for decay scoring
+ * @param budget - Target token budget
+ * @returns Compressed message array
  */
 function buildCompressedMessages(
   turns: Turn[],
@@ -534,49 +577,49 @@ function buildCompressedMessages(
   const completedTurns = turns.filter((t) => !t.isCurrent)
   const currentTurn = turns.find((t) => t.isCurrent)
 
-  const coldTurns = completedTurns.slice(0, Math.max(0, completedTurns.length - MAX_HOT_TURNS))
-  const hotTurns = completedTurns.slice(Math.max(0, completedTurns.length - MAX_HOT_TURNS))
+  // Reserve space for current turn
+  const reservedForCurrent = currentTurn ? estimateTokens(currentTurn.messages) : 0
+  const availableBudget = budget - reservedForCurrent
 
-  const result: any[] = []
-  let used = 0
+  if (availableBudget <= 0) {
+    // Not enough space even for current turn
+    return currentTurn ? [...currentTurn.messages] : []
+  }
 
-  // 1. Cold turns: always add (summary already minimal)
-  for (const turn of [...coldTurns].reverse()) {
-    let msgs: any[]
-    if (turn.summaryStatus === "done" && turn.summary) {
-      msgs = buildSummaryReplacement(turn)
+  // Process turns from newest to oldest, keeping as many as possible
+  const keptMessages: any[] = []
+  const replacedTurns: Turn[] = []
+  let usedTokens = 0
+
+  // Reverse iteration: newest first
+  for (const turn of [...completedTurns].reverse()) {
+    const compressed = buildCompressedMessagesForHotTurn(turn, toolOutputs, turns.length)
+    const tokens = estimateTokens(compressed)
+
+    if (usedTokens + tokens <= availableBudget) {
+      // Can fit - keep this turn (prepend to result later)
+      keptMessages.unshift(...compressed)
+      usedTokens += tokens
     } else {
-      msgs = structuredClone(turn.messages)
+      // Can't fit - mark for replacement
+      replacedTurns.unshift(turn)
     }
-    result.unshift(...msgs)
-    used += estimateTokens(msgs)
   }
 
-  // 2. Hot turns: from newest to oldest, progressive compression
-  const hotReversed = [...hotTurns].reverse()
-
-  for (const turn of hotReversed) {
-    // Try L1 (decay) first
-    let msgs = buildCompressedForTier(turn, toolOutputs, turns.length, "decay")
-    let tokens = estimateTokens(msgs)
-
-    if (used + tokens > budget && result.length > 0) {
-      // Budget exceeded → try L2 (summary)
-      msgs = buildCompressedForTier(turn, toolOutputs, turns.length, "summary")
-      tokens = estimateTokens(msgs)
+  // Now replace old turns with summaries from front (oldest) to back
+  const result: any[] = []
+  for (const turn of replacedTurns) {
+    if (turn.summaryStatus === "done" && turn.summary) {
+      result.push(...buildSummaryReplacement(turn))
+    } else {
+      result.push(...buildPlaceholderReplacement(turn))
     }
-
-    if (used + tokens > budget && result.length > 0) {
-      // Still exceeded → L3 (placeholder)
-      msgs = buildCompressedForTier(turn, toolOutputs, turns.length, "placeholder")
-      tokens = estimateTokens(msgs)
-    }
-
-    result.unshift(...msgs)
-    used += tokens
   }
 
-  // 3. Current turn: always added last
+  // Add kept messages (recent turns with decay)
+  result.push(...keptMessages)
+
+  // Add current turn at the end
   if (currentTurn) {
     result.push(...currentTurn.messages)
   }
@@ -586,39 +629,98 @@ function buildCompressedMessages(
 
 // ─── Session Sync ─────────────────────────────────────────────────────────────
 
+/**
+ * Sync session with hash-based caching:
+ * 1. Update tool dedup index
+ * 2. Split into turns
+ * 3. For each completed turn: compute hash → lookup cache → trigger async generation if needed
+ * 4. Build compressed messages respecting token budget
+ */
 function syncSession(sessionId: string, messages: any[], store: SessionStore): any[] {
-  const prevCompletedCount = store.turns.filter((t) => !t.isCurrent).length
+  const prevTurnCount = store.turns.length
 
-  // Replace source
+  // Step 1: Update tool output dedup index BEFORE splitting turns
   store.source = messages
+  updateToolOutputIndexFromMessages(messages, store.toolOutputs)
+
+  // Step 2: Split into turns
   store.turns = splitIntoTurns(messages)
 
-  // Update tool output dedup index
-  updateToolOutputIndex(store.turns, store.toolOutputs, store.turns.length)
-
-  // Trigger summary generation for newly completed turns
-  const newCompletedTurns = store.turns.filter(
-    (t) => !t.isCurrent && t.index >= prevCompletedCount,
-  )
-  for (const turn of newCompletedTurns) {
-    if (turn.summaryStatus === "pending") {
-      turn.summaryStatus = "pending"
-      summaryQueue.push({ sessionId, turn })
-    }
-  }
-
-  // Also trigger summary for turns entering cold zone
+  // Step 3: For each completed turn, lookup cache or trigger async generation
   const completedTurns = store.turns.filter((t) => !t.isCurrent)
-  const coldBoundary = Math.max(0, completedTurns.length - MAX_HOT_TURNS)
-  for (let i = 0; i < coldBoundary; i++) {
-    const turn = completedTurns[i]
-    if (turn.summaryStatus === "pending") {
-      summaryQueue.push({ sessionId, turn })
+  const pendingSummaries: Turn[] = []
+
+  for (const turn of completedTurns) {
+    // Skip if already processed
+    if (turn.summaryStatus === "done" || turn.summaryStatus === "generating") {
+      continue
+    }
+
+    // Try to get from cache (fast path)
+    const cachedSummary = getCachedSummary(turn.contentHash)
+    if (cachedSummary) {
+      turn.summary = cachedSummary
+      turn.summaryStatus = "done"
+      console.log(`[cache] hit turn=${turn.index} hash=${turn.contentHash.slice(0, 8)}..`)
+    } else if (turn.summaryStatus === "pending") {
+      // Need to generate
+      pendingSummaries.push(turn)
     }
   }
 
-  // Build compressed messages respecting token budget
+  // Trigger async generation for pending turns (only for new turns)
+  // New turns have index >= prevTurnCount (the count before this sync)
+  for (const turn of pendingSummaries) {
+    if (turn.index >= prevTurnCount) {
+      triggerSummaryGeneration(sessionId, turn)
+    }
+  }
+
+  // Step 4: Build compressed messages
   return buildCompressedMessages(store.turns, store.toolOutputs, TOKEN_BUDGET)
+}
+
+/**
+ * Update tool output dedup index from a flat message list.
+ * This runs BEFORE turn splitting to establish the global tool state.
+ */
+function updateToolOutputIndexFromMessages(
+  messages: any[],
+  toolOutputs: Map<string, ToolOutputEntry>,
+): void {
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i]
+    if (getRole(msg) !== "assistant") continue
+
+    for (const part of msg.parts || []) {
+      if (part.type !== "tool" || part.state?.status !== "completed") continue
+      const toolName: string = part.tool || ""
+      if (!CACHEABLE_TOOLS.has(toolName)) continue
+
+      const key = getToolOutputKey(toolName, part.state)
+      if (!key) continue
+
+      const output = part.state.output || ""
+
+      if (toolOutputs.has(key)) {
+        const entry = toolOutputs.get(key)!
+        entry.lastSeenTurnIdx = Math.floor(i / 10) // Approximate turn index
+        entry.callCount++
+        if (entry.output !== output) {
+          entry.output = output
+        }
+      } else {
+        toolOutputs.set(key, {
+          key,
+          toolType: toolName,
+          output,
+          timestamp: Date.now(),
+          lastSeenTurnIdx: Math.floor(i / 10),
+          callCount: 1,
+        })
+      }
+    }
+  }
 }
 
 // ─── Routes ─────────────────────────────────────────────────────────────────
@@ -636,20 +738,33 @@ app.post("/sync", (req: Request, res: Response) => {
   let store = sessions.get(sessionId)
 
   if (!store) {
+    const toolOutputs = new Map<string, ToolOutputEntry>()
+    // Step 1: Process tool dedup BEFORE splitting turns
+    updateToolOutputIndexFromMessages(messages, toolOutputs)
+
+    const turns = splitIntoTurns(messages)
+
+    // Step 2: For each completed turn, lookup cache or mark for async generation
+    const completedTurns = turns.filter((t) => !t.isCurrent)
+    for (const turn of completedTurns) {
+      const cachedSummary = getCachedSummary(turn.contentHash)
+      if (cachedSummary) {
+        turn.summary = cachedSummary
+        turn.summaryStatus = "done"
+      } else if (turn.summaryStatus === "pending") {
+        // Mark for async generation
+        triggerSummaryGeneration(sessionId, turn)
+      }
+    }
+
     store = {
       source: messages,
-      turns: splitIntoTurns(messages),
-      toolOutputs: new Map(),
+      turns,
+      toolOutputs,
       summaryIndex,
       createdAt: Date.now(),
     }
     sessions.set(sessionId, store)
-
-    // Trigger summaries for all completed turns
-    const completedTurns = store.turns.filter((t) => !t.isCurrent)
-    for (const turn of completedTurns) {
-      summaryQueue.push({ sessionId, turn })
-    }
 
     const compressed = buildCompressedMessages(store.turns, store.toolOutputs, TOKEN_BUDGET)
     console.log(`[sync] new session ${sessionId.slice(0, 8)}.. ${store.turns.length} turns, ${compressed.length} msgs returned`)
@@ -665,7 +780,19 @@ app.get("/turns/:sessionId", (req: Request, res: Response) => {
   if (!store) return res.status(404).json({ error: "session not found" })
 
   const completedTurns = store.turns.filter((t) => !t.isCurrent)
-  const coldBoundary = Math.max(0, completedTurns.length - MAX_HOT_TURNS)
+  const totalTokens = completedTurns.reduce((sum, t) => sum + t.tokenEstimate, 0)
+  const currentTurn = store.turns.find((t) => t.isCurrent)
+  const reservedTokens = currentTurn ? estimateTokens(currentTurn.messages) : 0
+
+  // Dynamically calculate which turns would be replaced based on token budget
+  let cumulativeTokens = reservedTokens
+  const replacedIndices = new Set<number>()
+  for (const turn of [...completedTurns].reverse()) {
+    cumulativeTokens += turn.tokenEstimate
+    if (cumulativeTokens > TOKEN_BUDGET) {
+      replacedIndices.add(turn.index)
+    }
+  }
 
   return res.json({
     turns: store.turns.map((t) => ({
@@ -675,7 +802,7 @@ app.get("/turns/:sessionId", (req: Request, res: Response) => {
       messageCount: t.messageCount,
       tokenEstimate: t.tokenEstimate,
       isCurrent: t.isCurrent,
-      isHot: !t.isCurrent && t.index >= coldBoundary,
+      isReplaced: replacedIndices.has(t.index),
       summaryStatus: t.summaryStatus,
       hasSummary: t.summaryStatus === "done",
       outcome: t.summary?.outcome,
@@ -683,6 +810,9 @@ app.get("/turns/:sessionId", (req: Request, res: Response) => {
       contentHash: t.contentHash,
     })),
     sourceLength: store.source.length,
+    totalTokens,
+    reservedTokens,
+    tokenBudget: TOKEN_BUDGET,
   })
 })
 
@@ -697,8 +827,9 @@ app.get("/turns/:sessionId/summary/:turnIndex", (req: Request, res: Response) =>
 
   if (turn.summary) return res.json({ summary: turn.summary, source: "memory" })
 
-  const indexed = store.summaryIndex.get(sid, turnIdx)
-  if (indexed) return res.json({ summary: indexed, source: "index" })
+  // Try to get from global cache by hash
+  const indexed = summaryIndex.getByHash(turn.contentHash)
+  if (indexed) return res.json({ summary: indexed, source: "cache" })
 
   return res.status(404).json({ error: "summary not yet available" })
 })
@@ -715,15 +846,14 @@ app.get("/search/:sessionId", (req: Request, res: Response) => {
   const rawLimit = req.query.limit
   const limit = Math.min(typeof rawLimit === "string" ? parseInt(rawLimit, 10) : 5, 20)
 
-  const summaryResults = store.summaryIndex.search(sid, query, limit)
+  // Global search across all cached summaries
+  const summaryResults = summaryIndex.search(query, limit)
 
   const matches = summaryResults.map((r) => {
-    const turn = store.turns.find((t) => t.index === r.turnIndex)
     return {
       turnIndex: r.turnIndex,
-      messages: turn?.messages ?? [],
-      summary: turn?.summary ?? r,
-      isCurrent: turn?.isCurrent ?? false,
+      summary: r,
+      source: "cache",
     }
   })
 
@@ -740,14 +870,10 @@ app.get("/turns/:sessionId/search", (req: Request, res: Response) => {
   const rawLimit = req.query.limit
   const limit = Math.min(typeof rawLimit === "string" ? parseInt(rawLimit, 10) : 10, 50)
 
-  const results = store.summaryIndex.search(sid, query, limit)
+  // Global search across all cached summaries
+  const results = summaryIndex.search(query, limit)
 
-  const withFresh = results.map((r) => {
-    const turn = store.turns.find((t) => t.index === r.turnIndex)
-    return turn?.summary || r
-  })
-
-  return res.json({ query, results: withFresh, count: withFresh.length })
+  return res.json({ query, results, count: results.length })
 })
 
 app.get("/state/:sessionId", (req: Request, res: Response) => {
@@ -755,17 +881,34 @@ app.get("/state/:sessionId", (req: Request, res: Response) => {
   if (!store) return res.status(404).json({ error: "session not found" })
 
   const completedTurns = store.turns.filter((t) => !t.isCurrent)
-  const coldBoundary = Math.max(0, completedTurns.length - MAX_HOT_TURNS)
+  const currentTurn = store.turns.find((t) => t.isCurrent)
+  const reservedTokens = currentTurn ? estimateTokens(currentTurn.messages) : 0
+  const targetBudget = TOKEN_BUDGET - reservedTokens
+
+  // Calculate hot/cold based on actual token budget
+  let cumulativeTokens = 0
+  let hotTurns = 0
+  let coldTurns = 0
+  for (const turn of [...completedTurns].reverse()) {
+    cumulativeTokens += turn.tokenEstimate
+    if (cumulativeTokens > targetBudget) {
+      coldTurns++
+    } else {
+      hotTurns++
+    }
+  }
 
   return res.json({
     sourceLength: store.source.length,
     turnCount: store.turns.length,
     completedTurnCount: completedTurns.length,
-    hotTurns: completedTurns.length - coldBoundary,
-    coldTurns: coldBoundary,
+    hotTurns,
+    coldTurns,
     pendingSummaries: completedTurns.filter((t) => t.summaryStatus === "pending" || t.summaryStatus === "generating").length,
     doneSummaries: completedTurns.filter((t) => t.summaryStatus === "done").length,
     toolOutputCacheSize: store.toolOutputs.size,
+    tokenBudget: TOKEN_BUDGET,
+    reservedForCurrent: reservedTokens,
   })
 })
 
