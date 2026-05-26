@@ -17,6 +17,8 @@ function loadConfig(): AppConfig {
   if (dw.distance === undefined) dw.distance = 1.0
   if (dw.time === undefined) dw.time = 0.3
   if (dw.frequency === undefined) dw.frequency = 0.5
+  if (cfg.server.tokenBudget === undefined) cfg.server.tokenBudget = 8000
+  if (cfg.server.maxHotTurns === undefined) cfg.server.maxHotTurns = 5
 
   return cfg
 }

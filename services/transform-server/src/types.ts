@@ -39,8 +39,8 @@ export interface DecayWeightsConfig {
 export interface ServerConfig {
   port: number
   sessionTtlMs: number
-  bucketSize: number
   maxHotTurns: number
+  tokenBudget: number
   decayWeights: DecayWeightsConfig
 }
 

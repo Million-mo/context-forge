@@ -2,8 +2,8 @@
   "server": {
     "port": 3000,
     "sessionTtlMs": 600000,
-    "bucketSize": 10,
     "maxHotTurns": 5,
+    "tokenBudget": 8000,
     "decayWeights": {
       "distance": 1.0,
       "time": 0.3,
