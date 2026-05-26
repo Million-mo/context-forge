@@ -1,6 +1,5 @@
 import express from "express"
 import type { Request, Response } from "express"
-import { createHash } from "crypto"
 import { resolve } from "path"
 import type { TurnSummary } from "./types.js"
 import { LLMClient, createLLMClient, serializeMessages } from "./llm.js"
@@ -11,8 +10,6 @@ const app = express()
 app.use(express.json({ limit: "10mb" }))
 
 // ─── Types ───────────────────────────────────────────────────────────────────
-
-type BucketHashes = Record<number, string>
 
 type CompressionLevel = "full" | "summary" | "placeholder" | "minimal"
 
@@ -31,28 +28,22 @@ type ToolOutputEntry = {
 
 interface Turn {
   index: number
-  startIdx: number       // first message index of this turn
-  endIdx: number         // exclusive
+  startIdx: number
+  endIdx: number
   messages: any[]
   isCurrent: boolean
   messageCount: number
   tokenEstimate: number
   compressedMessages: any[]
-  summary?: TurnSummary  // LLM-generated summary (filled async)
+  summary?: TurnSummary
 }
 
 type SessionStore = {
-  // All messages in order (source of truth)
   source: any[]
-  // Per-turn storage
   turns: Turn[]
-  // Last known turn count from client (for detecting new completed turns)
   lastKnownTurnCount: number
-  // Compression state
-  compressedBucketHashes: BucketHashes
   toolOutputs: Map<string, ToolOutputEntry>
   createdAt: number
-  // Summary index (one per session)
   summaryIndex: SummaryIndex
 }
 
@@ -65,7 +56,6 @@ const MAX_TOOL_OUTPUTS_PER_SESSION = 10000
 
 const { server } = config
 
-const BUCKET_SIZE = server.bucketSize
 const MAX_HOT_TURNS = server.maxHotTurns
 
 const DECAY_WEIGHTS = server.decayWeights
@@ -80,7 +70,7 @@ const TOOL_DECAY_MODIFIERS: Record<string, number> = {
 // ─── Storage ──────────────────────────────────────────────────────────────────
 
 const sessions = new Map<string, SessionStore>()
-const compressionQueue = new Set<string>() // sessionIds to compress
+const compressionQueue = new Set<string>()
 
 // ─── Summary Generation ───────────────────────────────────────────────────────
 
@@ -89,14 +79,12 @@ const summaryIndex = new SummaryIndex(resolve(process.cwd(), "data/summaries.db"
 const summaryQueue: Array<{ sessionId: string; turnIndex: number }> = []
 const MAX_SUMMARY_RETRIES = 2
 
-// Run summary worker on a recurring interval so new queue items are always picked up
 setInterval(() => {
   runSummaryWorker().catch((err) =>
     console.error("[summary] worker fatal:", err),
   )
 }, 1_000)
 
-// Run compression worker on a recurring interval
 setInterval(() => {
   runWorker()
 }, 2_000)
@@ -117,8 +105,6 @@ async function runSummaryWorker(): Promise<void> {
     try {
       const result = await llmClient.generateSummary(task.turnIndex, turn.messages)
       turn.summary = result.summary
-
-      // Persist to FTS5 index
       summaryIndex.insert(result.summary, task.sessionId)
 
       console.log(
@@ -128,7 +114,6 @@ async function runSummaryWorker(): Promise<void> {
       )
     } catch (err) {
       console.error(`[summary] failed turn=${task.turnIndex}:`, err)
-      // Re-queue with retry cap
       const retries = (turn as any)._summaryRetries ?? 0
       if (retries < MAX_SUMMARY_RETRIES) {
         ;(turn as any)._summaryRetries = retries + 1
@@ -138,7 +123,7 @@ async function runSummaryWorker(): Promise<void> {
   }
 }
 
-// ─── Utilities ────────────────────────────────────────────────────────────────
+// ─── Utilities ───────────────────────────────────────────────────────────────
 
 function estimateTokens(messages: any[]): number {
   return Math.ceil(
@@ -150,26 +135,10 @@ function getRole(msg: any): string {
   return msg?.info?.role || msg?.role || ""
 }
 
-function hashArray(messages: any[], bucketSize: number): BucketHashes {
-  const buckets: Record<number, string> = {}
-  for (let i = 0; i < messages.length; i += bucketSize) {
-    const bucket = messages.slice(i, i + bucketSize)
-    const content = JSON.stringify(bucket)
-    buckets[i / bucketSize] = createHash("sha256").update(content).digest("hex")
-  }
-  return buckets
-}
-
 /**
  * Split source messages into turns.
  * A turn ends when the NEXT message is a user message.
  * The last segment is always marked as "current".
- *
- * Example:
- *   [sys, user, asst, user, asst, user, asst]
- *   → Turn 0: [sys, user, asst]       (completed, next is user)
- *   → Turn 1: [user, asst]           (completed, next is user)
- *   → Turn 2: [user, asst]           (current, no next user)
  */
 function splitIntoTurns(messages: any[]): Turn[] {
   if (messages.length === 0) return []
@@ -214,7 +183,7 @@ function splitIntoTurns(messages: any[]): Turn[] {
   return turns
 }
 
-// ─── Compression helpers ───────────────────────────────────────────────────────
+// ─── Compression helpers ─────────────────────────────────────────────────────
 
 const CACHEABLE_TOOLS: Set<string> = new Set([
   "read", "glob", "grep", "webfetch",
@@ -379,8 +348,6 @@ function buildCompressedFromTurn(
 ): any[] {
   const result: any[] = []
 
-  // Single forward pass: deduplicate + apply decay compression.
-  // Earlier duplicates are skipped; the latest occurrence is kept.
   for (let i = 0; i < turnMessages.length; i++) {
     const msg = turnMessages[i]
     const role = getRole(msg)
@@ -421,13 +388,6 @@ function buildCompressedFromTurn(
   return result
 }
 
-// ─── Core: Compress a completed turn ─────────────────────────────────────────
-
-/**
- * Compress a completed turn by applying dedup + decay.
- * Hot turns (within MAX_HOT_TURNS) keep full output for recent tool calls.
- * Cold turns (older than MAX_HOT_TURNS) get full compression applied.
- */
 function compressTurn(
   turn: Turn,
   turnIndex: number,
@@ -477,21 +437,7 @@ async function runWorker(): Promise<void> {
           : compressTurn(turn, turn.index, store.toolOutputs, now)
       }
 
-      // Rebuild compressed view
-      const compressedAll: any[] = []
-      for (const turn of completedTurns) {
-        compressedAll.push(...turn.compressedMessages)
-      }
-      const currentTurn = store.turns.find((t) => t.isCurrent)
-      if (currentTurn) {
-        compressedAll.push(...currentTurn.messages)
-      }
-
-      store.compressedBucketHashes = hashArray(compressedAll, BUCKET_SIZE)
-
-      // Evict oldest tool output entries if map is too large
       evictStaleToolOutputs(store.toolOutputs, MAX_TOOL_OUTPUTS_PER_SESSION)
-
       compressionQueue.delete(sessionId)
     }
   } finally {
@@ -503,104 +449,80 @@ function queueCompression(sessionId: string): void {
   compressionQueue.add(sessionId)
 }
 
+// ─── Rebuild messages from turns ─────────────────────────────────────────────
+
+function rebuildMessagesFromTurns(turns: Turn[]): any[] {
+  const result: any[] = []
+
+  for (const turn of turns) {
+    if (turn.isCurrent) {
+      result.push(...turn.messages)
+    } else {
+      const msgs = turn.compressedMessages.length > 0 ? turn.compressedMessages : turn.messages
+      result.push(...msgs)
+    }
+  }
+
+  return result
+}
+
 // ─── Routes ──────────────────────────────────────────────────────────────────
 
 app.post("/sync", (req: Request, res: Response) => {
-  const { sessionId, clientBucketHashes, changedBuckets, completedTurnCount, currentTurnIndex } = req.body
+  const { sessionId, messages } = req.body
 
   if (!sessionId || typeof sessionId !== "string" || !SESSION_ID_PATTERN.test(sessionId)) {
     return res.status(400).json({ error: "invalid sessionId format" })
   }
 
+  if (!Array.isArray(messages)) {
+    return res.status(400).json({ error: "messages must be an array" })
+  }
+
   let store = sessions.get(sessionId)
 
   if (!store) {
-    // First sync: build turns from changed buckets
-    const allMessages: any[] = []
-    if (Array.isArray(changedBuckets)) {
-      for (const bucket of changedBuckets) {
-        if (Array.isArray(bucket.messages)) {
-          allMessages.push(...bucket.messages)
-        }
-      }
-    }
-
-    const turns = splitIntoTurns(allMessages)
+    // First sync
+    const turns = splitIntoTurns(messages)
     const completedTurns = turns.filter((t) => !t.isCurrent)
 
     store = {
-      source: allMessages,
+      source: messages,
       turns,
-      lastKnownTurnCount: completedTurnCount ?? completedTurns.length,
-      compressedBucketHashes: {},
+      lastKnownTurnCount: completedTurns.length,
       toolOutputs: new Map(),
       createdAt: Date.now(),
       summaryIndex,
     }
 
-    // Queue summaries for all completed turns
     for (const turn of completedTurns) {
       summaryQueue.push({ sessionId, turnIndex: turn.index })
     }
-    console.log(`[sync] queued ${completedTurns.length} summaries`)
+    console.log(`[sync] new session ${sessionId.slice(0, 8)}.. queued ${completedTurns.length} summaries`)
 
-    // Mark all completed turns for compression
     queueCompression(sessionId)
-
     sessions.set(sessionId, store)
 
-    // Return current state
-    return res.json({
-      turns: turns.map((t) => ({
-        index: t.index,
-        messages: t.isCurrent ? t.messages : (t.compressedMessages.length > 0 ? t.compressedMessages : t.messages),
-        isCurrent: t.isCurrent,
-      })),
-      currentTurnIndex: currentTurnIndex ?? (turns.length - 1),
-      serverBucketHashes: store.compressedBucketHashes,
-    })
+    const compressed = rebuildMessagesFromTurns(store.turns)
+    return res.json({ messages: compressed })
   }
 
-  // Merge new messages
-  if (Array.isArray(changedBuckets) && changedBuckets.length > 0) {
-    const newMessages: any[] = []
-    for (const bucket of changedBuckets) {
-      if (Array.isArray(bucket.messages)) {
-        newMessages.push(...bucket.messages)
-      }
-    }
+  // Subsequent sync: replace source and rebuild turns
+  const prevCompletedCount = store.turns.filter((t) => !t.isCurrent).length
+  store.source = messages
+  store.turns = splitIntoTurns(messages)
 
-      if (newMessages.length > 0) {
-      const prevLen = store.source.length
-      store.source = [...store.source, ...newMessages]
-      const prevTurnCount = store.turns.filter((t) => !t.isCurrent).length
-      store.turns = splitIntoTurns(store.source)
-      store.lastKnownTurnCount = completedTurnCount ?? store.turns.filter((t) => !t.isCurrent).length
-
-      // Queue summaries for newly completed turns
-      const newCompletedTurns = store.turns.filter(
-        (t) => !t.isCurrent && t.index >= prevTurnCount,
-      )
-      for (const turn of newCompletedTurns) {
-        summaryQueue.push({ sessionId, turnIndex: turn.index })
-      }
-
-      queueCompression(sessionId)
-    }
+  const newCompletedTurns = store.turns.filter(
+    (t) => !t.isCurrent && t.index >= prevCompletedCount,
+  )
+  for (const turn of newCompletedTurns) {
+    summaryQueue.push({ sessionId, turnIndex: turn.index })
   }
 
-  const completedTurns = store.turns.filter((t) => !t.isCurrent)
-  const currentTurn = store.turns.find((t) => t.isCurrent)
+  queueCompression(sessionId)
 
-  return res.json({
-    turns: store.turns.map((t) => ({
-      index: t.index,
-      messages: t.isCurrent ? t.messages : (t.compressedMessages.length > 0 ? t.compressedMessages : t.messages),
-      isCurrent: t.isCurrent,
-    })),
-    currentTurnIndex: currentTurn?.index ?? completedTurns.length,
-    serverBucketHashes: store.compressedBucketHashes,
-  })
+  const compressed = rebuildMessagesFromTurns(store.turns)
+  return res.json({ messages: compressed })
 })
 
 app.get("/turns/:sessionId", (req: Request, res: Response) => {
@@ -649,6 +571,38 @@ app.get("/turns/:sessionId/summary/:turnIndex", (req: Request, res: Response) =>
   return res.status(404).json({ error: "summary not yet available" })
 })
 
+app.get("/search/:sessionId", (req: Request, res: Response) => {
+  const sid = req.params.sessionId as string
+  if (!SESSION_ID_PATTERN.test(sid)) return res.status(400).json({ error: "invalid sessionId" })
+
+  const store = sessions.get(sid)
+  if (!store) return res.status(404).json({ error: "session not found" })
+
+  const rawQ = req.query.q
+  const query = typeof rawQ === "string" ? rawQ : ""
+  const rawLimit = req.query.limit
+  const limit = Math.min(typeof rawLimit === "string" ? parseInt(rawLimit, 10) : 5, 20)
+
+  const summaryResults = store.summaryIndex.search(sid, query, limit)
+
+  const matches = summaryResults.map((r) => {
+    const turn = store.turns.find((t) => t.index === r.turnIndex)
+    return {
+      turnIndex: r.turnIndex,
+      messages: turn?.messages ?? [],
+      summary: turn?.summary ?? r,
+      isCurrent: turn?.isCurrent ?? false,
+    }
+  })
+
+  return res.json({
+    query,
+    matches,
+    count: matches.length,
+    sessionId: sid,
+  })
+})
+
 app.get("/turns/:sessionId/search", (req: Request, res: Response) => {
   const sid = req.params.sessionId as string
   const store = sessions.get(sid)
@@ -673,7 +627,6 @@ app.post("/turns/:sessionId/archive", (req: Request, res: Response) => {
   const store = sessions.get(req.params.sessionId as string)
   if (!store) return res.status(404).json({ error: "session not found" })
 
-  // Archive the oldest turn (move from hot to cold)
   const completedTurns = store.turns.filter((t) => !t.isCurrent)
   if (completedTurns.length > MAX_HOT_TURNS) {
     const oldestCompleted = completedTurns[0]
@@ -693,7 +646,6 @@ app.get("/state/:sessionId", (req: Request, res: Response) => {
     turnCount: store.turns.length,
     completedTurnCount: store.turns.filter((t) => !t.isCurrent).length,
     hotTurns: store.turns.filter((t) => !t.isCurrent && t.index >= store.turns.filter((x) => !x.isCurrent).length - MAX_HOT_TURNS).length,
-    compressedBucketHashes: store.compressedBucketHashes,
   })
 })
 
@@ -702,7 +654,6 @@ app.get("/stats/:sessionId", (req: Request, res: Response) => {
   if (!store) return res.status(404).json({ error: "session not found" })
 
   let compressedCount = 0, fullCount = 0
-  const byTool: Record<string, number> = {}
   for (const [, entry] of store.toolOutputs) {
     if (entry.compressed) compressedCount++; else fullCount++
   }
@@ -714,7 +665,6 @@ app.get("/stats/:sessionId", (req: Request, res: Response) => {
     totalToolOutputs: store.toolOutputs.size,
     fullOutputs: fullCount,
     compressedOutputs: compressedCount,
-    byTool,
     pendingCompression: compressionQueue.has(req.params.sessionId as string),
   })
 })
@@ -727,7 +677,6 @@ app.delete("/session/:sessionId", (req: Request, res: Response) => {
   sessions.delete(sid)
   compressionQueue.delete(sid)
   summaryIndex.deleteSession(sid)
-  // Remove orphaned summaryQueue entries for this session
   for (let i = summaryQueue.length - 1; i >= 0; i--) {
     if (summaryQueue[i].sessionId === sid) {
       summaryQueue.splice(i, 1)
@@ -747,7 +696,6 @@ setInterval(() => {
       sessions.delete(id)
       compressionQueue.delete(id)
       summaryIndex.deleteSession(id)
-      // Remove orphaned summaryQueue entries
       for (let i = summaryQueue.length - 1; i >= 0; i--) {
         if (summaryQueue[i].sessionId === id) {
           summaryQueue.splice(i, 1)
