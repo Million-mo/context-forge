@@ -1,0 +1,21 @@
+{
+  "server": {
+    "port": 3000,
+    "sessionTtlMs": 600000,
+    "bucketSize": 10,
+    "maxHotTurns": 5,
+    "decayWeights": {
+      "distance": 1.0,
+      "time": 0.3,
+      "frequency": 0.5
+    }
+  },
+  "llm": {
+    "provider": "openai",
+    "model": "gpt-4o-mini",
+    "apiKey": "",
+    "baseUrl": "",
+    "maxTokens": 1024,
+    "temperature": 0.3
+  }
+}

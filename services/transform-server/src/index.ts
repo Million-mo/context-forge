@@ -1,6 +1,10 @@
 import express from "express"
 import type { Request, Response } from "express"
 import { createHash } from "crypto"
+import type { TurnSummary } from "./types.js"
+import { LLMClient, createLLMClient, serializeMessages } from "./llm.js"
+import { SummaryIndex } from "./summary-index.js"
+import { config } from "./config.js"
 
 const app = express()
 app.use(express.json({ limit: "10mb" }))
@@ -12,61 +16,119 @@ type BucketHashes = Record<number, string>
 type CompressionLevel = "full" | "summary" | "placeholder" | "minimal"
 
 type ToolOutputEntry = {
-  idx: number           // 首次调用的 index
-  lastCallIdx: number   // 最近一次调用的 index
-  callCount: number     // 调用次数
-  toolType: string      // 工具类型：read, glob, grep, web_fetch, web_search
+  idx: number
+  lastCallIdx: number
+  callCount: number
+  toolType: string
   compressed: boolean
   level: CompressionLevel
   originalOutput: string
   compressedOutput: string
-  timestamp: number     // 首次调用的时间
-  lastCallTime: number  // 最近一次调用的时间
+  timestamp: number
+  lastCallTime: number
+}
+
+interface Turn {
+  index: number
+  startIdx: number       // first message index of this turn
+  endIdx: number         // exclusive
+  messages: any[]
+  isCurrent: boolean
+  messageCount: number
+  tokenEstimate: number
+  compressedMessages: any[]
+  summary?: TurnSummary  // LLM-generated summary (filled async)
 }
 
 type SessionStore = {
-  source: any[]                         // source of truth, matches OpenCode, append-only
-  compressed: any[]                      // compressed view for LLM
-  compressedBucketHashes: BucketHashes   // hash of compressed view
-  lastCompressedIdx: number              // all source[0..<lastCompressedIdx) deduplicated
-  lastDecayedIdx: number                // all source[0..<lastDecayedIdx) decay applied
+  // All messages in order (source of truth)
+  source: any[]
+  // Per-turn storage
+  turns: Turn[]
+  // Last known turn count from client (for detecting new completed turns)
+  lastKnownTurnCount: number
+  // Compression state
+  compressedBucketHashes: BucketHashes
   toolOutputs: Map<string, ToolOutputEntry>
   createdAt: number
+  // Summary index (one per session)
+  summaryIndex: SummaryIndex
 }
 
 // ─── Configuration ────────────────────────────────────────────────────────────
 
-const BUCKET_SIZE = parseInt(process.env.BUCKET_SIZE || "10", 10)
+const { server } = config
 
-// Time thresholds (in ms) — still used as baseline
-const DECAY_FULL_MS = parseInt(process.env.DECAY_FULL_MS || "300000", 10)
-const DECAY_SUMMARY_MS = parseInt(process.env.DECAY_SUMMARY_MS || "900000", 10)
-const DECAY_PLACEHOLDER_MS = parseInt(process.env.DECAY_PLACEHOLDER_MS || "1800000", 10)
+const BUCKET_SIZE = server.bucketSize
+const MAX_HOT_TURNS = server.maxHotTurns
 
-// Decay weight configuration — can be tuned via experiments
-const DECAY_WEIGHTS = {
-  // Distance weight: importance of message distance (higher = distance matters more)
-  distance: parseFloat(process.env.DECAY_WEIGHT_DISTANCE || "1.0"),
-  // Time weight: importance of time age (higher = time matters more)
-  time: parseFloat(process.env.DECAY_WEIGHT_TIME || "0.3"),
-  // Frequency weight: importance of call count (higher = frequent calls decay slower)
-  frequency: parseFloat(process.env.DECAY_WEIGHT_FREQUENCY || "0.5"),
-}
+const DECAY_WEIGHTS = server.decayWeights
 
-// Tool type decay modifiers — different tools decay at different rates
 const TOOL_DECAY_MODIFIERS: Record<string, number> = {
-  read: 0.8,        // Read is stable, decay slower
-  glob: 0.6,        // Glob results change with file structure
-  grep: 0.7,        // Grep results change with code
-  webfetch: 1.5,    // Web content changes frequently
+  read: 0.8,
+  glob: 0.6,
+  grep: 0.7,
+  webfetch: 1.5,
 }
 
 // ─── Storage ──────────────────────────────────────────────────────────────────
 
 const sessions = new Map<string, SessionStore>()
-const compressionQueue = new Map<string, number>() // sessionId -> target userMsgIdx
+const compressionQueue = new Set<string>() // sessionIds to compress
 
-// ─── Hash utilities ────────────────────────────────────────────────────────────
+// ─── Summary Generation ───────────────────────────────────────────────────────
+
+const llmClient: LLMClient | null = createLLMClient(config.llm)
+const summaryIndex = new SummaryIndex()
+const summaryQueue: Array<{ sessionId: string; turnIndex: number }> = []
+const MAX_SUMMARY_RETRIES = 2
+
+async function runSummaryWorker(): Promise<void> {
+  if (!llmClient) return
+  if (summaryQueue.length === 0) return
+
+  const task = summaryQueue.shift()!
+  const store = sessions.get(task.sessionId)
+  if (!store) return
+
+  const turn = store.turns.find((t) => t.index === task.turnIndex && !t.isCurrent)
+  if (!turn) return
+  if (turn.summary) return // already generated
+
+  try {
+    const result = await llmClient.generateSummary(task.turnIndex, turn.messages)
+    turn.summary = result.summary
+
+    // Persist to FTS5 index
+    summaryIndex.insert(result.summary, task.sessionId)
+
+    console.log(
+      `[summary] turn=${task.turnIndex} session=${task.sessionId.slice(0, 8)}.. ` +
+      `outcome=${result.summary.outcome} confidence=${result.summary.confidence} ` +
+      `tokens=${result.tokensUsed}`,
+    )
+  } catch (err) {
+    console.error(`[summary] failed turn=${task.turnIndex}:`, err)
+    // Re-queue with retry cap
+    const retries = (turn as any)._summaryRetries ?? 0
+    if (retries < MAX_SUMMARY_RETRIES) {
+      ;(turn as any)._summaryRetries = retries + 1
+      summaryQueue.push(task)
+    }
+  }
+}
+
+// ─── Utilities ────────────────────────────────────────────────────────────────
+
+function estimateTokens(messages: any[]): number {
+  return Math.ceil(
+    messages.reduce((sum, m) => sum + (JSON.stringify(m).length / 4), 0)
+  )
+}
+
+function getRole(msg: any): string {
+  return msg?.info?.role || msg?.role || ""
+}
 
 function hashArray(messages: any[], bucketSize: number): BucketHashes {
   const buckets: Record<number, string> = {}
@@ -78,116 +140,135 @@ function hashArray(messages: any[], bucketSize: number): BucketHashes {
   return buckets
 }
 
-function buildCompressedFromSource(
-  source: any[],
-  start: number,
-  end: number,
-  dedup: Map<string, number>,
-  decay: Map<string, ToolOutputEntry>,
-): any[] {
-  // Returns a shallow copy of source[start..end) with tool outputs modified
-  const result: any[] = []
-  for (let i = start; i < end; i++) {
-    const msg = source[i]
-    const role = msg?.info?.role || msg?.role
+/**
+ * Split source messages into turns.
+ * A turn ends when the NEXT message is a user message.
+ * The last segment is always marked as "current".
+ *
+ * Example:
+ *   [sys, user, asst, user, asst, user, asst]
+ *   → Turn 0: [sys, user, asst]       (completed, next is user)
+ *   → Turn 1: [user, asst]           (completed, next is user)
+ *   → Turn 2: [user, asst]           (current, no next user)
+ */
+function splitIntoTurns(messages: any[]): Turn[] {
+  if (messages.length === 0) return []
 
-    if (role !== "assistant") {
-      result.push(msg)
-      continue
+  const turns: Turn[] = []
+  let currentTurnStart = 0
+
+  for (let i = 1; i < messages.length; i++) {
+    const prevMsg = messages[i - 1]
+    const currMsg = messages[i]
+    const prevRole = getRole(prevMsg)
+    const currRole = getRole(currMsg)
+
+    if (prevRole !== "user" && currRole === "user") {
+      const turnMessages = messages.slice(currentTurnStart, i)
+      turns.push({
+        index: turns.length,
+        startIdx: currentTurnStart,
+        endIdx: i,
+        messages: turnMessages,
+        isCurrent: false,
+        messageCount: turnMessages.length,
+        tokenEstimate: estimateTokens(turnMessages),
+        compressedMessages: [],
+      })
+      currentTurnStart = i
     }
-
-    // Deep clone the message so we don't mutate source
-    const cloned = JSON.parse(JSON.stringify(msg))
-
-    for (const part of cloned.parts || []) {
-      if (part.type !== "tool" || part.state?.status !== "completed") continue
-
-      const toolName: string = part.tool || ""
-      const key = getToolOutputKey(toolName, part.state)
-
-      if (key && dedup.has(key)) {
-        // This entry is a duplicate — replace output
-        const newerIdx = dedup.get(key)!
-        if (newerIdx !== i) {
-          const input = part.state?.input || {}
-          const file = input.file || input.path || input.pattern || "?"
-          part.state.output = `[COMPRESSED: duplicate of ${toolName} "${file}" at position ${newerIdx}]`
-          continue
-        }
-      }
-
-      if (key && decay.has(key)) {
-        const entry = decay.get(key)!
-        // Apply decay only if this is the latest call for this key
-        if (entry.compressed && entry.lastCallIdx === i) {
-          part.state.output = entry.compressedOutput
-        }
-      }
-
-      // Clean up internal markers (if any exist from previous runs)
-      delete part.state._compressed
-      delete part.state._compressedReason
-    }
-
-    result.push(cloned)
   }
-  return result
+
+  const finalMessages = messages.slice(currentTurnStart)
+  turns.push({
+    index: turns.length,
+    startIdx: currentTurnStart,
+    endIdx: messages.length,
+    messages: finalMessages,
+    isCurrent: true,
+    messageCount: finalMessages.length,
+    tokenEstimate: estimateTokens(finalMessages),
+    compressedMessages: [],
+  })
+
+  return turns
 }
 
 // ─── Compression helpers ───────────────────────────────────────────────────────
 
+const CACHEABLE_TOOLS: Set<string> = new Set([
+  "read", "glob", "grep", "webfetch",
+])
+
+function getToolOutputKey(toolName: string, state: any): string | null {
+  const input = state?.input || {}
+  const tool = toolName.toLowerCase()
+
+  switch (tool) {
+    case "read": {
+      const filePath = input.filePath || ""
+      const params = Object.entries(input)
+        .filter(([k, v]) => k !== "filePath" && v !== undefined && v !== "")
+        .map(([k, v]) => `${k}=${v}`)
+        .sort()
+        .join(";")
+      return params ? `file:${filePath};${params}` : `file:${filePath}`
+    }
+    case "grep": {
+      const pattern = input.pattern || ""
+      const params = Object.entries(input)
+        .filter(([k, v]) => k !== "pattern" && v !== undefined && v !== "")
+        .map(([k, v]) => `${k}=${v}`)
+        .sort()
+        .join(";")
+      return params ? `grep:${pattern};${params}` : `grep:${pattern}`
+    }
+    case "glob": {
+      const pattern = input.pattern || ""
+      const params = Object.entries(input)
+        .filter(([k, v]) => k !== "pattern" && v !== undefined && v !== "")
+        .map(([k, v]) => `${k}=${v}`)
+        .sort()
+        .join(";")
+      return params ? `glob:${pattern};${params}` : `glob:${pattern}`
+    }
+    case "webfetch": {
+      const url = input.url || ""
+      const params = Object.entries(input)
+        .filter(([k, v]) => k !== "url" && v !== undefined && v !== "")
+        .map(([k, v]) => `${k}=${v}`)
+        .sort()
+        .join(";")
+      return params ? `url:${url};${params}` : `url:${url}`
+    }
+    default:
+      return null
+  }
+}
+
 type DecayContext = {
-  currentUserIdx: number  // Current user message index
-  now: number             // Current timestamp
+  currentTurnIdx: number
+  now: number
 }
 
-/**
- * Normalize tool name to category for decay modifier lookup
- */
-function getToolCategory(toolName: string): string {
-  return toolName.toLowerCase()
-}
-
-/**
- * Calculate decay score based on multiple factors.
- * Higher score = more decayed (less important).
- * 
- * Factors:
- * - Distance: how far this tool call is from current user message
- * - Time: how long since the last call
- * - Frequency: how many times this tool has been called
- * - Tool type: different tools decay at different rates
- */
 function calculateDecayScore(
   entry: ToolOutputEntry,
   ctx: DecayContext
 ): number {
   const { distance: wDist, time: wTime, frequency: wFreq } = DECAY_WEIGHTS
-  
-  // 1. Distance score (exponential decay based on message distance)
-  // Closer to current message = lower score = less decayed
-  const msgDistance = ctx.currentUserIdx - entry.lastCallIdx
-  const distanceScore = Math.min(msgDistance / 20, 5) // Cap at 5 to avoid extreme values
-  
-  // 2. Time score (logarithmic to reduce extreme time effects)
-  // Longer time = higher score = more decayed
-  const timeAgeMs = ctx.now - entry.lastCallTime
-  const timeAgeMinutes = timeAgeMs / 60000
+
+  const turnDistance = ctx.currentTurnIdx - Math.floor(entry.lastCallIdx / 10)
+  const distanceScore = Math.min(turnDistance / 3, 5)
+
+  const timeAgeMinutes = (ctx.now - entry.lastCallTime) / 60000
   const timeScore = Math.log2(timeAgeMinutes + 1) * wTime
-  
-  // 3. Frequency score (inverse relationship)
-  // More calls = lower score = less decayed
+
   const frequencyScore = Math.log2(entry.callCount + 1) * wFreq
-  
-  // 4. Tool-specific modifier
+
   const toolModifier = TOOL_DECAY_MODIFIERS[entry.toolType] || 1.0
-  
-  // Combined score with tool modifier
+
   const baseScore = distanceScore * wDist + timeScore - frequencyScore
-  const finalScore = baseScore * toolModifier
-  
-  // Normalize to 0-10 range for level thresholds
-  return Math.max(0, Math.min(finalScore, 10))
+  return Math.max(0, Math.min(baseScore * toolModifier, 10))
 }
 
 function getCompressionLevel(
@@ -195,12 +276,10 @@ function getCompressionLevel(
   ctx: DecayContext
 ): CompressionLevel {
   const score = calculateDecayScore(entry, ctx)
-  
-  // Thresholds for compression levels
-  if (score < 2) return "full"         // Low decay, keep full
-  if (score < 5) return "summary"     // Medium decay, summarize
-  if (score < 8) return "placeholder"  // High decay, placeholder only
-  return "minimal"                      // Very high decay, minimal
+  if (score < 2) return "full"
+  if (score < 5) return "summary"
+  if (score < 8) return "placeholder"
+  return "minimal"
 }
 
 function compressToolOutput(toolName: string, state: any, level: CompressionLevel): string {
@@ -272,80 +351,19 @@ function compressToolOutput(toolName: string, state: any, level: CompressionLeve
   }
 }
 
-const CACHEABLE_TOOLS: Set<string> = new Set([
-  "read", "glob", "grep", "webfetch",
-])
-
-function getToolOutputKey(toolName: string, state: any): string | null {
-  const input = state?.input || {}
-  const tool = toolName.toLowerCase()
-
-  switch (tool) {
-    case "read": {
-      const filePath = input.filePath || ""
-      const params = Object.entries(input)
-        .filter(([k, v]) => k !== "filePath" && v !== undefined && v !== "")
-        .map(([k, v]) => `${k}=${v}`)
-        .sort()
-        .join(";")
-      return params ? `file:${filePath};${params}` : `file:${filePath}`
-    }
-    case "grep": {
-      const pattern = input.pattern || ""
-      const params = Object.entries(input)
-        .filter(([k, v]) => k !== "pattern" && v !== undefined && v !== "")
-        .map(([k, v]) => `${k}=${v}`)
-        .sort()
-        .join(";")
-      return params ? `grep:${pattern};${params}` : `grep:${pattern}`
-    }
-    case "glob": {
-      const pattern = input.pattern || ""
-      const params = Object.entries(input)
-        .filter(([k, v]) => k !== "pattern" && v !== undefined && v !== "")
-        .map(([k, v]) => `${k}=${v}`)
-        .sort()
-        .join(";")
-      return params ? `glob:${pattern};${params}` : `glob:${pattern}`
-    }
-    case "webfetch": {
-      const url = input.url || ""
-      const params = Object.entries(input)
-        .filter(([k, v]) => k !== "url" && v !== undefined && v !== "")
-        .map(([k, v]) => `${k}=${v}`)
-        .sort()
-        .join(";")
-      return params ? `url:${url};${params}` : `url:${url}`
-    }
-    default:
-      return null
-  }
-}
-
-// ─── Core compression ─────────────────────────────────────────────────────────
-
-/**
- * Compress source[0..userMsgIdx) in two steps:
- * 1. Deduplication — backward scan, mark older duplicates
- * 2. Time decay — apply to latest entries in the NEW range only
- *
- * Then rebuild compressed[] to match.
- */
-function compressUpTo(store: SessionStore, userMsgIdx: number): void {
-  const source = store.source
-  if (userMsgIdx <= 0) return
-
-  const now = Date.now()
-
-  // ── Step 1: Deduplication [0, userMsgIdx) ──
-  // Backward scan: for each depKey, the LATEST occurrence is kept intact,
-  // all earlier ones get marked as duplicate.
-  // Result is IDEMPOTENT — safe to recompute from 0 every time.
+function buildCompressedFromTurn(
+  turnMessages: any[],
+  startGlobalIdx: number,
+  toolOutputs: Map<string, ToolOutputEntry>,
+  ctx: DecayContext,
+): any[] {
+  const result: any[] = []
   const latestOf = new Map<string, number>()
 
-  for (let i = userMsgIdx - 1; i >= 0; i--) {
-    const msg = source[i]
-    const role = msg?.info?.role || msg?.role
+  // Backward scan for dedup within this turn
+  for (let i = turnMessages.length - 1; i >= 0; i--) {
+    const msg = turnMessages[i]
+    const role = getRole(msg)
     if (role !== "assistant") continue
 
     for (const part of msg.parts || []) {
@@ -357,17 +375,14 @@ function compressUpTo(store: SessionStore, userMsgIdx: number): void {
       if (!key) continue
 
       if (latestOf.has(key)) {
-        // Older duplicate found — the newer one (at latestOf.get(key)) is kept.
-        // Mark this older one in source so rebuild picks it up.
-        const newerIdx = latestOf.get(key)!
-        const newerMsg = source[newerIdx]
-        if (newerMsg) {
-          for (const np of newerMsg.parts || []) {
-            if (np.type !== "tool") continue
-            const npInput = np.state?.input || {}
-            const npFile = npInput.file || npInput.path || npInput.pattern || "?"
-            np.state.output = `[COMPRESSED: duplicate of ${np.tool || toolName} "${npFile}" at position ${i}]`
-          }
+        const newerTurnIdx = latestOf.get(key)!
+        const globalNewerIdx = startGlobalIdx + newerTurnIdx
+        const newerMsg = turnMessages[newerTurnIdx]
+        for (const np of newerMsg?.parts || []) {
+          if (np.type !== "tool") continue
+          const npInput = np.state?.input || {}
+          const npFile = npInput.file || npInput.path || npInput.pattern || "?"
+          np.state.output = `[COMPRESSED: duplicate of ${np.tool || toolName} "${npFile}" at position ${startGlobalIdx + i}]`
         }
       }
 
@@ -375,93 +390,63 @@ function compressUpTo(store: SessionStore, userMsgIdx: number): void {
     }
   }
 
-  store.lastCompressedIdx = userMsgIdx
-
-  // ── Step 2: Decay based on multi-factor scoring ──
-  // Build decay context with current position
-  const decayCtx: DecayContext = {
-    currentUserIdx: userMsgIdx,
-    now,
-  }
-
-  for (const [key, idx] of latestOf) {
-    const msg = source[idx]
-    const toolPart = (msg?.parts || []).find((p: any) => p.type === "tool")
-    if (!toolPart) continue
-
-    const toolName: string = toolPart.tool || ""
-    const toolCategory = getToolCategory(toolName)
-    const existing = store.toolOutputs.get(key)
-    const ageMs = now - (existing?.lastCallTime || existing?.timestamp || now)
-
-    // Calculate decay score using multi-factor formula
-    const entryForScore: ToolOutputEntry = existing ? {
-      ...existing,
-      lastCallIdx: existing.lastCallIdx || existing.idx,
-      lastCallTime: existing.lastCallTime || existing.timestamp,
-    } : {
-      idx,
-      lastCallIdx: idx,
-      callCount: 1,
-      toolType: toolCategory,
-      compressed: false,
-      level: "full",
-      originalOutput: "",
-      compressedOutput: "",
-      timestamp: now,
-      lastCallTime: now,
+  // Forward scan for decay
+  const dedupKeys = new Set(latestOf.keys())
+  for (let i = 0; i < turnMessages.length; i++) {
+    const msg = turnMessages[i]
+    const role = getRole(msg)
+    if (role !== "assistant") {
+      result.push(msg)
+      continue
     }
 
-    const level = getCompressionLevel(entryForScore, decayCtx)
+    const cloned = JSON.parse(JSON.stringify(msg))
 
-    if (existing) {
-      // Update existing entry
-      if (level !== existing.level) {
-        existing.level = level
-        existing.compressed = level !== "full"
-        existing.compressedOutput = compressToolOutput(toolName, toolPart.state || {}, level)
+    for (const part of cloned.parts || []) {
+      if (part.type !== "tool" || part.state?.status !== "completed") continue
+      const toolName: string = part.tool || ""
+      const key = getToolOutputKey(toolName, part.state)
+
+      if (key && dedupKeys.has(key) && latestOf.get(key) !== i) {
+        continue
       }
-      // Update call tracking
-      existing.lastCallIdx = idx
-      existing.lastCallTime = now
-      existing.callCount = (existing.callCount || 1) + 1
-    } else {
-      // Create new entry
-      store.toolOutputs.set(key, {
-        idx,
-        lastCallIdx: idx,
-        callCount: 1,
-        toolType: toolCategory,
-        compressed: level !== "full",
-        level,
-        originalOutput: toolPart.state?.output?.toString() || "",
-        compressedOutput: compressToolOutput(toolName, toolPart.state || {}, level),
-        timestamp: now,
-        lastCallTime: now,
-      })
+
+      if (key && toolOutputs.has(key)) {
+        const entry = toolOutputs.get(key)!
+        const globalIdx = startGlobalIdx + i
+        const entryForScore: ToolOutputEntry = {
+          ...entry,
+          lastCallIdx: globalIdx,
+          lastCallTime: entry.lastCallTime,
+        }
+        const level = getCompressionLevel(entryForScore, ctx)
+        if (level !== "full") {
+          part.state.output = compressToolOutput(toolName, part.state, level)
+        }
+      }
     }
+
+    result.push(cloned)
   }
 
-  store.lastDecayedIdx = userMsgIdx
+  return result
+}
 
-  // ── Step 3: Rebuild compressed view ──
-  store.compressed = buildCompressedFromSource(
-    source, 0, userMsgIdx,
-    latestOf,
-    store.toolOutputs,
-  )
+// ─── Core: Compress a completed turn ─────────────────────────────────────────
 
-  // Append unprocessed source tail to compressed
-  for (let i = userMsgIdx; i < source.length; i++) {
-    store.compressed.push(source[i])
-  }
-
-  store.compressedBucketHashes = hashArray(store.compressed, BUCKET_SIZE)
-
-  console.log(
-    `[${new Date().toISOString()}] compressed [0, ${userMsgIdx}), dedup deps: ${latestOf.size}, ` +
-    `total source: ${source.length}, compressed: ${store.compressed.length}`,
-  )
+/**
+ * Compress a completed turn by applying dedup + decay.
+ * Hot turns (within MAX_HOT_TURNS) keep full output for recent tool calls.
+ * Cold turns (older than MAX_HOT_TURNS) get full compression applied.
+ */
+function compressTurn(
+  turn: Turn,
+  turnIndex: number,
+  toolOutputs: Map<string, ToolOutputEntry>,
+  now: number,
+): any[] {
+  const ctx: DecayContext = { currentTurnIdx: turnIndex, now }
+  return buildCompressedFromTurn(turn.messages, turn.startIdx, toolOutputs, ctx)
 }
 
 // ─── Background worker ────────────────────────────────────────────────────────
@@ -472,13 +457,38 @@ async function runWorker(): Promise<void> {
   if (isWorkerRunning) return
   isWorkerRunning = true
   try {
-    for (const [sessionId, userMsgIdx] of compressionQueue) {
+    for (const sessionId of compressionQueue) {
       const store = sessions.get(sessionId)
       if (!store) {
         compressionQueue.delete(sessionId)
         continue
       }
-      compressUpTo(store, userMsgIdx)
+
+      const now = Date.now()
+      const completedTurns = store.turns.filter((t) => !t.isCurrent)
+
+      for (let i = 0; i < completedTurns.length; i++) {
+        const turn = completedTurns[i]
+        if (turn.compressedMessages.length > 0) continue
+
+        const isHot = i >= completedTurns.length - MAX_HOT_TURNS
+        turn.compressedMessages = isHot
+          ? turn.messages
+          : compressTurn(turn, i, store.toolOutputs, now)
+      }
+
+      // Rebuild compressed view
+      const compressedAll: any[] = []
+      for (const turn of completedTurns) {
+        compressedAll.push(...turn.compressedMessages)
+      }
+      const currentTurn = store.turns.find((t) => t.isCurrent)
+      if (currentTurn) {
+        compressedAll.push(...currentTurn.messages)
+      }
+
+      store.compressedBucketHashes = hashArray(compressedAll, BUCKET_SIZE)
+
       compressionQueue.delete(sessionId)
     }
   } finally {
@@ -486,165 +496,192 @@ async function runWorker(): Promise<void> {
   }
 }
 
-function queueCompression(sessionId: string, userMsgIdx: number): void {
-  compressionQueue.set(sessionId, userMsgIdx)
+function queueCompression(sessionId: string): void {
+  compressionQueue.add(sessionId)
   setImmediate(() => runWorker())
 }
 
 // ─── Routes ──────────────────────────────────────────────────────────────────
 
 app.post("/sync", (req: Request, res: Response) => {
-  const { sessionId, clientBucketHashes, changedBuckets } = req.body
+  const { sessionId, clientBucketHashes, changedBuckets, completedTurnCount, currentTurnIndex } = req.body
 
   if (!sessionId || typeof sessionId !== "string") {
     return res.status(400).json({ error: "sessionId is required" })
-  }
-  if (!Array.isArray(changedBuckets)) {
-    return res.status(400).json({ error: "changedBuckets must be an array" })
   }
 
   let store = sessions.get(sessionId)
 
   if (!store) {
-    // First sync
-    const source = changedBuckets.flatMap((b: any) => b.messages)
+    // First sync: build turns from changed buckets
+    const allMessages: any[] = []
+    if (Array.isArray(changedBuckets)) {
+      for (const bucket of changedBuckets) {
+        if (Array.isArray(bucket.messages)) {
+          allMessages.push(...bucket.messages)
+        }
+      }
+    }
+
+    const turns = splitIntoTurns(allMessages)
+    const completedTurns = turns.filter((t) => !t.isCurrent)
 
     store = {
-      source,
-      compressed: JSON.parse(JSON.stringify(source)),
-      compressedBucketHashes: hashArray(source, BUCKET_SIZE),
-      lastCompressedIdx: 0,
-      lastDecayedIdx: 0,
+      source: allMessages,
+      turns,
+      lastKnownTurnCount: completedTurnCount ?? completedTurns.length,
+      compressedBucketHashes: {},
       toolOutputs: new Map(),
       createdAt: Date.now(),
+      summaryIndex,
     }
 
-    // Find first user message
-    let firstUserIdx = -1
-    for (let i = 0; i < source.length; i++) {
-      const role = source[i]?.info?.role || source[i]?.role
-      if (role === "user") { firstUserIdx = i; break }
+    // Queue summaries for all completed turns
+    for (const turn of completedTurns) {
+      summaryQueue.push({ sessionId, turnIndex: turn.index })
     }
+    setImmediate(() => runSummaryWorker())
 
-    if (firstUserIdx > 0) {
-      queueCompression(sessionId, firstUserIdx)
-    }
+    // Mark all completed turns for compression
+    queueCompression(sessionId)
 
     sessions.set(sessionId, store)
 
+    // Return current state
     return res.json({
-      compressedBucketHashes: store.compressedBucketHashes,
-      compressedMessages: store.compressed,
+      turns: turns.map((t) => ({
+        index: t.index,
+        messages: t.isCurrent ? t.messages : (t.compressedMessages.length > 0 ? t.compressedMessages : t.messages),
+        isCurrent: t.isCurrent,
+      })),
+      currentTurnIndex: currentTurnIndex ?? (turns.length - 1),
+      serverBucketHashes: store.compressedBucketHashes,
     })
   }
 
-  // Merge new buckets into source (append-only merge)
-  const prevLen = store.source.length
-  const newBucketCount = Math.max(
-    ...changedBuckets.map((b: any) => b.index),
-    ...Object.keys(store.compressedBucketHashes).map(Number),
-  ) + 1
+  // Merge new messages
+  if (Array.isArray(changedBuckets) && changedBuckets.length > 0) {
+    const newMessages: any[] = []
+    for (const bucket of changedBuckets) {
+      if (Array.isArray(bucket.messages)) {
+        newMessages.push(...bucket.messages)
+      }
+    }
 
-  const merged = mergeInto(store.source, changedBuckets, newBucketCount)
+      if (newMessages.length > 0) {
+      const prevLen = store.source.length
+      store.source = [...store.source, ...newMessages]
+      const prevTurnCount = store.turns.filter((t) => !t.isCurrent).length
+      store.turns = splitIntoTurns(store.source)
+      store.lastKnownTurnCount = completedTurnCount ?? store.turns.filter((t) => !t.isCurrent).length
 
-  // Detect new indices
-  const prevSet = new Set(store.source.map((m) => JSON.stringify(m)))
-  const newIndices: number[] = []
-  for (let i = prevLen; i < merged.length; i++) {
-    if (!prevSet.has(JSON.stringify(merged[i]))) newIndices.push(i)
-  }
+      // Queue summaries for newly completed turns
+      const newCompletedTurns = store.turns.filter(
+        (t) => !t.isCurrent && t.index >= prevTurnCount,
+      )
+      for (const turn of newCompletedTurns) {
+        summaryQueue.push({ sessionId, turnIndex: turn.index })
+      }
+      setImmediate(() => runSummaryWorker())
 
-  store.source = merged
-
-  // Find user messages in new range
-  let firstNewUserIdx = -1
-  for (const idx of newIndices) {
-    const role = store.source[idx]?.info?.role || store.source[idx]?.role
-    if (role === "user") { firstNewUserIdx = idx; break }
-  }
-
-  // Find the earliest user message in entire source (for recompression anchor)
-  let firstUserIdx = -1
-  for (let i = 0; i < store.source.length; i++) {
-    const role = store.source[i]?.info?.role || store.source[i]?.role
-    if (role === "user") { firstUserIdx = i; break }
-  }
-
-  if (firstUserIdx > 0) {
-    queueCompression(sessionId, firstUserIdx)
-  }
-
-  // Build stale buckets from compressed view
-  const compressedBucketHashes = store.compressedBucketHashes
-  const staleBuckets: { index: number; messages: any[] }[] = []
-  for (const [idxStr, hash] of Object.entries(compressedBucketHashes)) {
-    const idx = parseInt(idxStr, 10)
-    const clientHash = clientBucketHashes?.[idx]
-    if (!clientHash || clientHash !== hash) {
-      const start = idx * BUCKET_SIZE
-      staleBuckets.push({
-        index: idx,
-        messages: store.compressed.slice(start, start + BUCKET_SIZE),
-      })
+      queueCompression(sessionId)
     }
   }
 
-  console.log(
-    `[${new Date().toISOString()}] [${sessionId}] sync: source ${store.source.length}, ` +
-    `compressed ${store.compressed.length}, new ${newIndices.length}, stale ${staleBuckets.length}`,
-  )
+  const completedTurns = store.turns.filter((t) => !t.isCurrent)
+  const currentTurn = store.turns.find((t) => t.isCurrent)
 
-  return res.json({ compressedBucketHashes, staleBuckets })
+  return res.json({
+    turns: store.turns.map((t) => ({
+      index: t.index,
+      messages: t.isCurrent ? t.messages : (t.compressedMessages.length > 0 ? t.compressedMessages : t.messages),
+      isCurrent: t.isCurrent,
+    })),
+    currentTurnIndex: currentTurn?.index ?? completedTurns.length,
+    serverBucketHashes: store.compressedBucketHashes,
+  })
 })
 
-function mergeInto(existing: any[], changedBuckets: { index: number; messages: any[] }[], newBucketCount: number): any[] {
-  const bucketMap = new Map<number, any[]>()
-  for (const { index, messages } of changedBuckets) {
-    bucketMap.set(index, messages)
+app.get("/turns/:sessionId", (req: Request, res: Response) => {
+  const store = sessions.get(req.params.sessionId as string)
+  if (!store) return res.status(404).json({ error: "session not found" })
+
+  return res.json({
+    turns: store.turns.map((t) => ({
+      index: t.index,
+      startIdx: t.startIdx,
+      endIdx: t.endIdx,
+      messageCount: t.messageCount,
+      tokenEstimate: t.tokenEstimate,
+      isCurrent: t.isCurrent,
+      isCompressed: t.compressedMessages.length > 0,
+      isHot: !t.isCurrent && t.index >= store.turns.filter((x) => !x.isCurrent).length - MAX_HOT_TURNS,
+      hasSummary: !!t.summary,
+      outcome: t.summary?.outcome,
+      confidence: t.summary?.confidence,
+    })),
+    lastKnownTurnCount: store.lastKnownTurnCount,
+    sourceLength: store.source.length,
+  })
+})
+
+app.get("/turns/:sessionId/summary/:turnIndex", (req: Request, res: Response) => {
+  const sid = req.params.sessionId as string
+  const turnIdx = req.params.turnIndex as string
+  const store = sessions.get(sid)
+  if (!store) return res.status(404).json({ error: "session not found" })
+
+  const turn = store.turns.find(
+    (t) => t.index === parseInt(String(turnIdx), 10),
+  )
+  if (!turn) return res.status(404).json({ error: "turn not found" })
+
+  if (turn.summary) {
+    return res.json({ summary: turn.summary, source: "memory" })
   }
 
-  const result: any[] = [...existing]
-  for (let i = existing.length; i < newBucketCount * BUCKET_SIZE; i++) {
-    if (bucketMap.has(i / BUCKET_SIZE)) {
-      result.push(...bucketMap.get(i / BUCKET_SIZE)!)
-    }
-  }
-  return result
-}
-
-app.post("/submit", (req: Request, res: Response) => {
-  const { sessionId, messages } = req.body
-
-  if (!sessionId || typeof sessionId !== "string") {
-    return res.status(400).json({ error: "sessionId is required" })
-  }
-  if (!Array.isArray(messages)) {
-    return res.status(400).json({ error: "messages must be an array" })
+  const indexed = store.summaryIndex.get(sid, parseInt(String(turnIdx), 10))
+  if (indexed) {
+    return res.json({ summary: indexed, source: "index" })
   }
 
-  const store: SessionStore = {
-    source: messages,
-    compressed: JSON.parse(JSON.stringify(messages)),
-    compressedBucketHashes: hashArray(messages, BUCKET_SIZE),
-    lastCompressedIdx: 0,
-    lastDecayedIdx: 0,
-    toolOutputs: new Map(),
-    createdAt: Date.now(),
+  return res.status(404).json({ error: "summary not yet available" })
+})
+
+app.get("/turns/:sessionId/search", (req: Request, res: Response) => {
+  const sid = req.params.sessionId as string
+  const store = sessions.get(sid)
+  if (!store) return res.status(404).json({ error: "session not found" })
+
+  const rawQ = req.query.q
+  const query = typeof rawQ === "string" ? rawQ : ""
+  const rawLimit = req.query.limit
+  const limit = Math.min(typeof rawLimit === "string" ? parseInt(rawLimit, 10) : 10, 50)
+
+  const results = store.summaryIndex.search(sid, query, limit)
+
+  const withFresh = results.map((r) => {
+    const turn = store.turns.find((t) => t.index === r.turnIndex)
+    return turn?.summary || r
+  })
+
+  return res.json({ query, results: withFresh, count: withFresh.length })
+})
+
+app.post("/turns/:sessionId/archive", (req: Request, res: Response) => {
+  const store = sessions.get(req.params.sessionId as string)
+  if (!store) return res.status(404).json({ error: "session not found" })
+
+  // Archive the oldest turn (move from hot to cold)
+  const completedTurns = store.turns.filter((t) => !t.isCurrent)
+  if (completedTurns.length > MAX_HOT_TURNS) {
+    const oldestCompleted = completedTurns[0]
+    const now = Date.now()
+    oldestCompleted.compressedMessages = compressTurn(oldestCompleted, 0, store.toolOutputs, now)
+    queueCompression(req.params.sessionId as string)
   }
 
-  let firstUserIdx = -1
-  for (let i = 0; i < messages.length; i++) {
-    const role = messages[i]?.info?.role || messages[i]?.role
-    if (role === "user") { firstUserIdx = i; break }
-  }
-
-  if (firstUserIdx > 0) {
-    queueCompression(sessionId, firstUserIdx)
-  }
-
-  sessions.set(sessionId, store)
-
-  return res.json({ compressedBucketHashes: store.compressedBucketHashes })
+  return res.json({ ok: true, hotTurns: completedTurns.length - MAX_HOT_TURNS })
 })
 
 app.get("/state/:sessionId", (req: Request, res: Response) => {
@@ -652,10 +689,10 @@ app.get("/state/:sessionId", (req: Request, res: Response) => {
   if (!store) return res.status(404).json({ error: "session not found" })
   return res.json({
     sourceLength: store.source.length,
-    compressedLength: store.compressed.length,
+    turnCount: store.turns.length,
+    completedTurnCount: store.turns.filter((t) => !t.isCurrent).length,
+    hotTurns: store.turns.filter((t) => !t.isCurrent && t.index >= store.turns.filter((x) => !x.isCurrent).length - MAX_HOT_TURNS).length,
     compressedBucketHashes: store.compressedBucketHashes,
-    lastCompressedIdx: store.lastCompressedIdx,
-    lastDecayedIdx: store.lastDecayedIdx,
   })
 })
 
@@ -667,19 +704,17 @@ app.get("/stats/:sessionId", (req: Request, res: Response) => {
   const byTool: Record<string, number> = {}
   for (const [, entry] of store.toolOutputs) {
     if (entry.compressed) compressedCount++; else fullCount++
-    const part = store.source[entry.idx]?.parts?.find((p: any) => p.type === "tool")
-    const tool = part?.tool || "?"
-    byTool[tool] = (byTool[tool] || 0) + 1
   }
 
   return res.json({
     sourceLength: store.source.length,
-    compressedLength: store.compressed.length,
+    turnCount: store.turns.length,
+    completedTurnCount: store.turns.filter((t) => !t.isCurrent).length,
     totalToolOutputs: store.toolOutputs.size,
     fullOutputs: fullCount,
     compressedOutputs: compressedCount,
     byTool,
-    pendingCompression: compressionQueue.get(req.params.sessionId as string) ?? null,
+    pendingCompression: compressionQueue.has(req.params.sessionId as string),
   })
 })
 
@@ -693,7 +728,7 @@ app.delete("/session/:sessionId", (req: Request, res: Response) => {
 
 setInterval(() => {
   const now = Date.now()
-  const TTL = parseInt(process.env.SESSION_TTL || "600000", 10)
+  const TTL = server.sessionTtlMs
   let evicted = 0
   for (const [id] of sessions) {
     if (now - (sessions.get(id)?.createdAt || 0) > TTL) {
@@ -708,13 +743,16 @@ setInterval(() => {
 // ─── Startup ──────────────────────────────────────────────────────────────────
 
 app.get("/health", (_req: Request, res: Response) => {
-  res.json({ status: "ok", sessions: sessions.size, pending: compressionQueue.size })
+  res.json({
+    status: "ok",
+    sessions: sessions.size,
+    pending: compressionQueue.size,
+    maxHotTurns: MAX_HOT_TURNS,
+  })
 })
 
-const PORT = parseInt(process.env.PORT || "3000", 10)
+const PORT = server.port
 app.listen(PORT, () => {
   console.log(`Transform server listening on http://localhost:${PORT}`)
-  console.log(
-    `Decay: full<${DECAY_FULL_MS}ms, summary<${DECAY_FULL_MS + DECAY_SUMMARY_MS}ms, placeholder<${DECAY_FULL_MS + DECAY_SUMMARY_MS + DECAY_PLACEHOLDER_MS}ms`,
-  )
+  console.log(`Paging: Page = Turn, max_hot_turns = ${MAX_HOT_TURNS}`)
 })
