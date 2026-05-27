@@ -9,6 +9,7 @@
     "dev": "tsx watch src/server.ts",
     "start": "tsx src/server.ts",
     "build": "tsc",
+    "typecheck": "tsc --noEmit",
     "build:start": "npm run build && node dist/server.js",
     "prepublishOnly": "npm run build"
   },
