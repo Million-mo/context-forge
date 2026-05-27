@@ -1,0 +1,21 @@
+{
+  "name": "context-forge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Context management for AI coding agents",
+  "workspaces": [
+    "packages/types"
+  ],
+  "overrides": {
+    "zod": "^3.25.0",
+    "typescript": "^5.8.0",
+    "@types/node": "^22.0.0"
+  },
+  "scripts": {
+    "install:all": "tsx scripts/install-all.ts",
+    "install:all:uninstall": "tsx scripts/install-all.ts --uninstall",
+    "build:types": "npm run build --workspace=@context-forge/types",
+    "build:summary-mcp": "npm run build --workspace=ctx_summary_mcp",
+    "typecheck": "npm run typecheck --workspace=@context-forge/types"
+  }
+}
