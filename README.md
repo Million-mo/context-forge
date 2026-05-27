@@ -22,14 +22,16 @@ See [ctx_plugin/README.md](ctx_plugin/README.md) for full details.
 
 Located under `ctx_plugin/skills/`:
 
-| Skill | Description |
-|-------|-------------|
-| `caveman` | Core compression mode skill (six intensity levels) |
-| `cavecrew` | Decision guide for spawning caveman subagents |
-| `caveman-commit` | Commit message generation |
-| `caveman-review` | Code review |
-| `caveman-compress` | Text compression |
-| `caveman-help` | Help/guidance |
+| Skill | Type | Description |
+|-------|------|-------------|
+| `caveman` | 核心 | 每次回复压缩风格，减少 ~65-75% token 输出 |
+| `cavecrew` | 核心 | 子 agent 决策：何时派发给 caveman 风格的 subagent |
+| `caveman-commit` | 按需 | Commit message 生成（`/caveman-commit`） |
+| `caveman-review` | 按需 | Code review（`/caveman-review`） |
+| `caveman-compress` | 按需 | 文本压缩（`/caveman-compress`） |
+| `caveman-help` | 按需 | 帮助/引导 |
+
+**推荐配置**：至少保留 `caveman` + `cavecrew`，其他按需手动激活。
 
 ---
 
