@@ -21,7 +21,7 @@
 import { createHash } from "node:crypto"
 import { resolve, dirname } from "node:path"
 import { fileURLToPath } from "node:url"
-import { mkdirSync } from "node:fs"
+import { mkdirSync, appendFileSync } from "node:fs"
 import { DatabaseSync } from "node:sqlite"
 
 // ─── Types ─────────────────────────────────────────────────────────────────
@@ -92,7 +92,28 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const WORKSPACE_ROOT = resolve(__dirname, "..", "..")
 
 const DATA_DIR = process.env.TRANSFORM_DATA_DIR
-  || resolve(WORKSPACE_ROOT, "ctx_plugin", "transform-data")
+  || resolve(WORKSPACE_ROOT, "ctx_plugin")
+
+const LOG_DIR = resolve(DATA_DIR, "..", "..", ".local", "share", "opencode", "log")
+const LOG_FILE = resolve(LOG_DIR, "transform.log")
+
+function ensureLogDir() {
+  try { mkdirSync(LOG_DIR, { recursive: true }) } catch {}
+}
+
+let _logFileReady = false
+function writeLog(level: string, ...parts: string[]) {
+  if (!_logFileReady) { ensureLogDir(); _logFileReady = true }
+  const ts = new Date().toISOString().replace("T", " ").replace("Z", "")
+  const line = `${ts} [${level}] [Transform] ${parts.join(" ")}\n`
+  try { appendFileSync(LOG_FILE, line) } catch {}
+}
+
+const log = {
+  info: (...a: string[]) => { console.log("[Transform]", ...a); writeLog("INFO", ...a) },
+  warn: (...a: string[]) => { console.warn("[Transform]", ...a); writeLog("WARN", ...a) },
+  error: (...a: string[]) => { console.error("[Transform]", ...a); writeLog("ERROR", ...a) },
+}
 
 const TOKEN_BUDGET = 8000
 const MAX_HOT_TURNS = 5
@@ -128,8 +149,8 @@ const LLM_CONFIG = {
 
 function validateLLMConfig(): void {
   if (LLM_CONFIG.apiKey === "placeholder") {
-    console.warn("[Transform] WARNING: LLM summarization DISABLED (no API key configured)")
-    console.warn("[Transform] Set TRANSFORM_LLM_API_KEY + TRANSFORM_LLM_BASE_URL to enable turn summaries")
+    log.warn("LLM summarization DISABLED (no API key configured)")
+    log.warn("Set TRANSFORM_LLM_API_KEY + TRANSFORM_LLM_BASE_URL to enable turn summaries")
   }
 }
 
@@ -190,6 +211,19 @@ CREATE TRIGGER IF NOT EXISTS summaries_au AFTER UPDATE ON global_summary_cache B
   INSERT INTO summaries_fts(rowid, content_hash, overview, intent, outcome)
   VALUES (new.rowid, new.content_hash, new.overview, new.intent, new.outcome);
 END;
+
+CREATE TABLE IF NOT EXISTS turn_messages (
+  msg_id TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  turn_index INTEGER NOT NULL,
+  role TEXT NOT NULL,
+  content TEXT NOT NULL,
+  tool_calls TEXT,
+  created_at INTEGER NOT NULL,
+  seq_in_turn INTEGER NOT NULL,
+  PRIMARY KEY (msg_id)
+);
+CREATE INDEX IF NOT EXISTS idx_turn_messages_lookup ON turn_messages(session_id, turn_index, seq_in_turn);
 `
 
 class SummaryStore {
@@ -259,6 +293,46 @@ class SummaryStore {
       turn_index: summary.turnIndex,
       content_hash: contentHash,
     })
+  }
+
+  insertMessages(sessionId: string, turnIndex: number, messages: any[]): void {
+    const stmt = this.db.prepare(`
+      INSERT OR REPLACE INTO turn_messages
+        (msg_id, session_id, turn_index, role, content, tool_calls, created_at, seq_in_turn)
+      VALUES (@msg_id, @session_id, @turn_index, @role, @content, @tool_calls, @created_at, @seq_in_turn)
+    `)
+
+    for (let seq = 0; seq < messages.length; seq++) {
+      const msg = messages[seq]
+      const role = msg?.info?.role || msg?.role || "unknown"
+
+      let textContent = ""
+      const toolCalls: any[] = []
+
+      for (const part of msg.parts || []) {
+        if (part.type === "text") {
+          textContent += (part.text || "").trim()
+        } else if (part.type === "tool") {
+          const state = part.state || {}
+          toolCalls.push({
+            name: part.tool || "unknown",
+            input: JSON.stringify(state.input || {}),
+            output: (state.output || "").toString(),
+          })
+        }
+      }
+
+      stmt.run({
+        msg_id: `${sessionId}-turn${turnIndex}-seq${seq}`,
+        session_id: sessionId,
+        turn_index: turnIndex,
+        role,
+        content: textContent,
+        tool_calls: toolCalls.length > 0 ? JSON.stringify(toolCalls) : null,
+        created_at: msg?.timestamp || Date.now(),
+        seq_in_turn: seq,
+      })
+    }
   }
 
   search(query: string, limit = 5): TurnSummary[] {
@@ -394,7 +468,7 @@ async function generateSummary(
   contentHash: string,
 ): Promise<TurnSummary | null> {
   if (!LLM_CONFIG.apiKey || LLM_CONFIG.apiKey === "placeholder") {
-    console.log(`[Transform] No LLM API key — summary skipped for turn ${turnIndex}`)
+    log.info(`No LLM API key — summary skipped for turn ${turnIndex}`)
     return null
   }
 
@@ -430,7 +504,7 @@ async function generateSummary(
     }
 
     if (!res.ok) {
-      console.error(`[Transform] LLM API error ${res.status} for turn ${turnIndex}`)
+      log.error(`LLM API error ${res.status} for turn ${turnIndex}`)
       return null
     }
 
@@ -456,10 +530,11 @@ async function generateSummary(
     }
 
     getStore().insert(summary, sessionId, contentHash)
-    console.log(`[Transform] Summary generated for turn ${turnIndex}: ${summary.overview}`)
+    getStore().insertMessages(sessionId, turnIndex, messages)
+    log.info(`Summary generated for turn ${turnIndex}: ${summary.overview}`)
     return summary
   } catch (err) {
-    console.error(`[Transform] LLM call failed for turn ${turnIndex}:`, err)
+    log.error(`LLM call failed for turn ${turnIndex}:`, String(err))
     return null
   }
 }
@@ -909,7 +984,7 @@ function syncSession(
   messages: any[],
 ): { messages: any[]; sourceTokens: number; compressedTokens: number; reduction: string } {
   if (!Array.isArray(messages)) {
-    console.error("[Transform] Expected messages to be array")
+    log.error("Expected messages to be array")
     return { messages: [], sourceTokens: 0, compressedTokens: 0, reduction: "0%" }
   }
 
@@ -944,8 +1019,8 @@ function syncSession(
   const { messages: compressed, sourceTokens, compressedTokens, reduction } =
     buildCompressedMessages(store.turns, store.toolOutputs)
 
-  console.log(
-    `[Transform] session=${sessionId.slice(0, 8)}.. turns=${store.turns.length} ` +
+  log.info(
+    `session=${sessionId.slice(0, 8)}.. turns=${store.turns.length} ` +
     `tokens=${sourceTokens}→${compressedTokens} (${reduction})`
   )
 
@@ -1060,14 +1135,14 @@ export const TransformPlugin = () => ({
     const insertAt = messages.length - 1
     output.messages.splice(insertAt, 0, ...injected)
 
-    console.log(
-      `[Transform] Injected ${injected.length} history blocks, ` +
+    log.info(
+      `Injected ${injected.length} history blocks, ` +
       `compression=${sourceTokens}→${compressedTokens} (${reduction})`
     )
   },
 
   "session.created": async () => {
-    console.log(`[Transform] Session started, data dir: ${DATA_DIR}`)
+    log.info(`Session started, data dir: ${DATA_DIR}`)
   },
 })
 

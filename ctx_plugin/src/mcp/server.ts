@@ -20,7 +20,7 @@ import { getAvailableLanguages, getRuntimeSummary, getRuntimeInfo } from "./runt
 import { ContentStore } from "./store.js";
 
 // Server version
-const VERSION = "0.2.0";
+const VERSION = "0.3.0";
 
 // Get project directory from environment or cwd
 function getProjectDir(): string {
@@ -29,7 +29,7 @@ function getProjectDir(): string {
 
 // Create MCP server instance
 const server = new McpServer(
-  { name: "ctx_plugin", version: VERSION },
+  { name: "ctx_tool_mcp", version: VERSION },
   {
     capabilities: {
       tools: {},
@@ -693,10 +693,10 @@ export { server, executor };
 
 // Main entry point
 async function main() {
-  console.error("[ctx_plugin] MCP server starting...");
+  console.error("[ctx_tool_mcp] MCP server starting...");
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error("[ctx_plugin] MCP server connected");
+  console.error("[ctx_tool_mcp] MCP server connected");
 }
 
 main().catch((error) => {
