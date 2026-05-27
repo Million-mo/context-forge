@@ -1,7 +1,10 @@
-// ─── Summary Core Types ───────────────────────────────────────────────────────
+// ─── Core Types ───────────────────────────────────────────────────────────────
 
 export type OutcomeType = "success" | "partial" | "failure" | "unknown"
+
 export type ArtifactAction = "created" | "modified" | "deleted" | "read"
+
+// ─── TurnSummary Types ────────────────────────────────────────────────────────
 
 export interface ActionEntry {
   tool: string
@@ -33,11 +36,13 @@ export interface TurnSummary {
   todos: string[]
   confidence: number
   reason?: string
-  generatedAt: number
   tokensUsed?: number
+  generatedAt: number
   startMsgId: string
   endMsgId: string
 }
+
+// ─── StoredMessage ────────────────────────────────────────────────────────────
 
 export interface StoredMessage {
   msgId: string

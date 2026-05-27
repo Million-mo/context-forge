@@ -30,4 +30,4 @@ export const SUMMARY_USER_PROMPT = `请为以下对话轮次生成摘要：
   "reason": "当 outcome!=success 或 confidence<0.7 时的解释"
 }`
 
-export const MAX_SERIALIZED_SIZE = 50000
+export const MAX_SERIALIZED_SIZE = 50_000
