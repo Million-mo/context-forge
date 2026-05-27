@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 /**
  * ctx_plugin CLI - Modular install/uninstall for RTK, Caveman, and MCP server.
  *
@@ -188,17 +189,18 @@ function uninstallPlugin(): { success: boolean; message: string } {
     return { success: false, message: `Unknown plugin at ${pluginPath}. Will not remove.` };
   }
 
-  // Just warn, don't delete to avoid data loss
-  return { success: true, message: `Plugin exists at ${pluginPath}. Remove manually or use 'ctx_plugin uninstall --force'` };
-}
-
-function uninstallPluginForce(): { success: boolean; message: string } {
-  const pluginPath = getPluginFilePath();
-  if (!existsSync(pluginPath)) {
-    return { success: true, message: `Plugin is not installed.` };
+  try {
+    rmSync(pluginPath);
+  } catch (err: unknown) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "EPERM" || code === "EACCES") {
+      return {
+        success: false,
+        message: `Permission denied. The file may be locked by another process (e.g. opencode).\nClose opencode and run: ctx_plugin uninstall caveman`
+      };
+    }
+    throw err;
   }
-
-  rmSync(pluginPath);
   return { success: true, message: `Plugin removed from ${pluginPath}` };
 }
 
@@ -481,15 +483,10 @@ async function main(): Promise<void> {
         const result = uninstallMcp();
         console.log(result.message);
       } else if (target === "plugin" || target === "rtk" || target === "caveman") {
-        if (args[2] === "--force") {
-          const result = uninstallPluginForce();
-          console.log(result.message);
-        } else {
-          const result = uninstallPlugin();
-          console.log(result.message);
-          if (!result.success) {
-            console.log(`Use 'ctx_plugin uninstall ${target} --force' to force removal`);
-          }
+        const result = uninstallPlugin();
+        console.log(result.message);
+        if (!result.success) {
+          console.log(`Tip: close opencode first, then retry.`);
         }
       } else {
         console.log(`Unknown component: ${target}`);

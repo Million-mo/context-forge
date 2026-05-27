@@ -14,7 +14,7 @@
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "preinstall": "npm run build",
-    "postinstall": "ctx_plugin install"
+    "postinstall": "node ./dist/cli.js install"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
