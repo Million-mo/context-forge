@@ -1,11 +1,12 @@
 # ctx_plugin
 
-Unified opencode plugin that merges two capabilities:
+Unified opencode plugin toolkit with three independent components:
 
-- **RTK** — intercepts `bash`/`shell` tool calls and rewrites commands via `rtk rewrite`
-- **Caveman** — ultra-compressed communication mode with session-level persistence
-
-Source of truth lives in `src/plugin.ts`. A mirror is deployed to `.opencode/plugins/caveman.mjs` for runtime.
+| Component | Purpose | File |
+|---|---|---|
+| **RTK** | Intercepts `bash`/`shell` calls, rewrites via `rtk rewrite` | `src/rtk.ts` → `rtk.ts` |
+| **Caveman** | Ultra-compressed communication mode with persistence | `src/caveman.ts` → `caveman.mjs` |
+| **Routing** | Tool routing, security policy, guidance injection, shell env | `src/routing-plugin.ts` → `routing.mjs` |
 
 > **Note:** MCP servers have moved to `mcps/`. See `mcps/mcp_ctx_tool` (code execution + search) and `mcps/mcp_ctx_summary` (context summary + recall).
 
@@ -35,15 +36,14 @@ Six compression intensity levels for every model response:
 - `/caveman-review` — code review
 - `/caveman-compress` — compress provided text
 
-### Security Policy
+### Routing Plugin
 
-The plugin enforces a layered security model:
+Tool routing, security policy enforcement, and per-session guidance injection:
 
-1. **Deny patterns** — `curl | sh`, `wget | sh`, `eval()` calls, `LD_PRELOAD`, `PYTHONSTARTUP`
-2. **Allow patterns** — structural read-only commands (git status, ls, cat, npm ls, etc.)
-3. **Ask** — anything not matched above, defaults to asking the user
-
-Policy is loaded from `~/.config/opencode/settings.json`. Set `CTX_PLUGIN_REQUIRE_SECURITY=1` to fail-closed.
+1. **Security** — denies dangerous patterns (`curl | sh`, `eval()`, `LD_PRELOAD`), auto-grants safe commands
+2. **Routing** — routes tool calls via `src/hooks/routing.ts`, injects guidance for large outputs / curl / build tools
+3. **Shell env** — injects `CTX_PLUGIN_*` environment variables into all shell sessions
+4. **RTK** — rewrites bash/shell commands via `rtk rewrite`
 
 ---
 
@@ -53,8 +53,13 @@ Policy is loaded from `~/.config/opencode/settings.json`. Set `CTX_PLUGIN_REQUIR
 # Build
 cd ctx_plugin && npm install && npm run build
 
-# Install plugin
-ctx_plugin install plugin
+# Install all components
+ctx_plugin install
+
+# Install individually
+ctx_plugin install caveman   # Caveman compression only
+ctx_plugin install routing  # Routing + security only
+ctx_plugin install --rtk   # RTK binary (auto-runs official installer)
 ```
 
 ---
@@ -62,28 +67,16 @@ ctx_plugin install plugin
 ## CLI Commands
 
 ```bash
-ctx_plugin install [plugin]   Install plugin
-ctx_plugin uninstall [plugin]  Uninstall plugin
-ctx_plugin status              Show installation status
-ctx_plugin doctor              Run diagnostics
-ctx_plugin security            Show active security policies
+ctx_plugin install [caveman|routing]   Install plugin
+ctx_plugin uninstall [caveman|routing]  Uninstall plugin
+ctx_plugin status                        Show installation status
+ctx_plugin doctor                        Run diagnostics
+ctx_plugin security                      Show active security policies
 ```
 
 ---
 
 ## Configuration
-
-### settings.json (Security policy)
-
-```json
-{
-  "permissions": {
-    "allow": ["Bash(pwd)", "Bash(git status)"],
-    "deny": ["Bash(sudo *)"],
-    "ask": []
-  }
-}
-```
 
 ### Environment Variables
 
@@ -111,26 +104,43 @@ Caveman reads from `~/.config/caveman/config.json`:
 ```
 ctx_plugin/
 ├── src/
-│   ├── plugin.ts          # opencode plugin (RTK + Caveman hooks)
-│   ├── cli.ts             # install/uninstall/status CLI
-│   ├── security.ts        # Policy engine + shell-escape scanner
+│   ├── caveman.ts            # Caveman opencode plugin
+│   ├── routing-plugin.ts     # Routing + security opencode plugin
+│   ├── rtk.ts                # Standalone RTK plugin
+│   ├── cli.ts                # install/uninstall/status CLI
+│   ├── security.ts           # Policy engine + shell-escape scanner
 │   └── hooks/
-│       ├── routing.ts     # Tool routing decisions
-│       ├── guidance.ts    # Per-session one-shot guidance throttle
-│       ├── tool-naming.ts # Tool name normalization
-│       └── index.ts       # Re-exports
+│       ├── routing.ts        # Tool routing decisions
+│       ├── guidance.ts       # Per-session one-shot guidance throttle
+│       ├── tool-naming.ts    # Tool name normalization
+│       └── index.ts          # Re-exports
+├── bin/
+│   ├── install.js             # Unified dispatcher
+│   ├── install-rtk.js         # RTK install
+│   ├── install-caveman.js      # Caveman install
+│   └── install-routing.js     # Routing install
 └── skills/
-    ├── caveman/           # SKILL.md for each caveman intensity level
-    ├── cavecrew/          # Multi-agent coordination
+    ├── caveman/               # SKILL.md for each caveman intensity level
+    ├── cavecrew/              # Multi-agent coordination
     ├── caveman-commit/
     ├── caveman-review/
     ├── caveman-compress/
     └── caveman-help/
+
+.opencode/plugins/
+├── caveman.mjs                # Runtime: Caveman plugin
+├── routing.mjs                # Runtime: Routing plugin
+└── rtk.ts                     # Runtime: RTK plugin (auto-scanned)
 ```
 
 ---
 
 ## Changelog
+
+### v0.3.0
+- **Split** `plugin.ts` into three independent plugins: `caveman.ts`, `routing-plugin.ts`, `rtk.ts`
+- Each component now installable/removable independently
+- Added `install-routing.js` and `--routing` CLI flag
 
 ### v0.2.0
 - Added `ctx_fetch_and_index` tool for web content indexing

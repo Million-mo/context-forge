@@ -3,11 +3,11 @@
  * ctx_plugin — CLI
  *
  * Thin dispatcher around bin/install.js and bin/uninstall.js.
- * RTK and Caveman are installed/removed independently.
+ * RTK, Caveman, and Routing are installed/removed independently.
  *
  * Usage:
- *   ctx_plugin install [--rtk|--caveman|--all] [--force]
- *   ctx_plugin uninstall [--rtk|--caveman|--all]
+ *   ctx_plugin install [--rtk|--caveman|--routing|--all] [--force]
+ *   ctx_plugin uninstall [--rtk|--caveman|--routing|--all]
  *   ctx_plugin doctor
  */
 
@@ -71,10 +71,13 @@ switch (cmd) {
     const cavInstalled   = existsSync(join(OC_DIR, "skills", "caveman"))
     const agentsInstalled = existsSync(join(OC_DIR, "agents"))
 
+    const routingInstalled = existsSync(join(OC_DIR, "plugins", "routing.mjs"))
+
     console.log(`\nctx_plugin doctor  →  ${OC_DIR}\n`)
     console.log(`  rtk binary:         ${hasRtk ? "✓ found" : "✗ not found (plugin will skip itself)"}`)
     console.log(`  rtk.ts installed:   ${rtkInstalled ? "✓" : "✗"}`)
     console.log(`  caveman skills:     ${cavInstalled ? "✓" : "✗"}`)
+    console.log(`  routing.mjs:        ${routingInstalled ? "✓" : "✗"}`)
     console.log(`  cavecrew agents:    ${agentsInstalled ? "✓" : "✗"}`)
     console.log()
     break
@@ -86,26 +89,28 @@ switch (cmd) {
   default: {
     console.log([
       "",
-      "ctx_plugin — RTK + Caveman for OpenCode",
+      "ctx_plugin — RTK + Caveman + Routing for OpenCode",
       "",
       "Usage:",
-      "  ctx_plugin install [--rtk|--caveman|--all] [--force]",
-      "  ctx_plugin uninstall [--rtk|--caveman|--all]",
+      "  ctx_plugin install [--rtk|--caveman|--routing|--all] [--force]",
+      "  ctx_plugin uninstall [--rtk|--caveman|--routing|--all]",
       "  ctx_plugin doctor",
       "  ctx_plugin gain [--all|--since Nd|--today] [--project <name>] [--share]",
       "",
       "Targets:",
-      "  --all      install/remove both (default)",
+      "  --all      install/remove all components (default)",
       "  --rtk      RTK bash-rewrite plugin only",
       "  --caveman  Caveman skills + agents + AGENTS.md only",
+      "  --routing  Routing security + guidance plugin only",
       "  --force    overwrite existing files",
       "",
       "Examples:",
-      "  ctx_plugin install              # install both",
+      "  ctx_plugin install              # install all",
       "  ctx_plugin install --caveman   # Caveman only",
-      "  ctx_plugin uninstall --rtk     # remove RTK, keep Caveman",
-      "  ctx_plugin doctor              # show install status",
-      "  ctx_plugin gain                # RTK token savings report",
+      "  ctx_plugin install --routing  # Routing only",
+      "  ctx_plugin uninstall --rtk     # remove RTK, keep others",
+      "  ctx_plugin doctor             # show install status",
+      "  ctx_plugin gain              # RTK token savings report",
       "  ctx_plugin gain --today       # today's commands (detailed log)",
       "  ctx_plugin gain --since 7     # last 7 days",
       "  ctx_plugin gain --share       # one-line summary",

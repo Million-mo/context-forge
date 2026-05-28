@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 /**
- * ctx_plugin CLI - Install/uninstall for RTK + Caveman plugin.
+ * ctx_plugin CLI - Install/uninstall for RTK + Caveman + Routing plugin.
  *
  * MCP servers are now in mcps/mcp_ctx_tool and mcps/mcp_ctx_summary.
  * Use their own install scripts or scripts/install-all.ts instead.
  */
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync } from "node:fs";
-import { resolve, dirname } from "node:path";
+import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
 import { execSync } from "node:child_process";
@@ -36,45 +36,45 @@ function getPluginsDir(): string {
   return resolve(configDir, "plugins");
 }
 
-function getPluginFilePath(): string {
-  return resolve(getPluginsDir(), "caveman.mjs");
-}
-
 // ─────────────────────────────────────────────────────────
-// Component: Plugin (RTK + Caveman)
+// Component: Caveman Plugin
 // ─────────────────────────────────────────────────────────
 
-function installPlugin(): { success: boolean; message: string } {
+function installCavemanPlugin(): { success: boolean; message: string } {
   const pluginsDir = getPluginsDir();
-  const pluginPath = getPluginFilePath();
-  const sourcePath = resolve(getPluginRoot(), "src", "plugin.ts");
+  const pluginPath = resolve(pluginsDir, "caveman.mjs");
+  const buildScript = resolve(getPluginRoot(), "bin", "build-plugins.mjs");
 
   if (!existsSync(pluginsDir)) {
     mkdirSync(pluginsDir, { recursive: true });
   }
 
-  if (!existsSync(sourcePath)) {
-    return { success: false, message: `Plugin source not found at ${sourcePath}` };
+  if (!existsSync(buildScript)) {
+    return { success: false, message: `build-plugins.mjs not found at ${buildScript}. Run: cd ctx_plugin && npm install && npm run build` };
   }
 
-  const pluginContent = generatePluginMjs(sourcePath);
-
-  if (existsSync(pluginPath)) {
-    return { success: true, message: `Plugin already exists at ${pluginPath}` };
+  try {
+    execSync(`node "${buildScript}"`, { stdio: "pipe", cwd: getPluginRoot() });
+  } catch (e) {
+    const err = e as { message?: string; stderr?: Buffer };
+    return { success: false, message: `build-plugins.mjs failed:\n${err.stderr?.toString() ?? err.message}` };
   }
 
-  writeFileSync(pluginPath, pluginContent);
-  return { success: true, message: `Plugin installed at ${pluginPath}. Restart opencode to use.` };
+  if (!existsSync(pluginPath)) {
+    return { success: false, message: `caveman.mjs not generated at ${pluginPath}` };
+  }
+
+  return { success: true, message: `Caveman plugin installed at ${pluginPath}. Restart opencode to use.` };
 }
 
-function uninstallPlugin(): { success: boolean; message: string } {
-  const pluginPath = getPluginFilePath();
+function uninstallCavemanPlugin(): { success: boolean; message: string } {
+  const pluginPath = resolve(getPluginsDir(), "caveman.mjs");
   if (!existsSync(pluginPath)) {
-    return { success: true, message: `Plugin is not installed.` };
+    return { success: true, message: `Caveman plugin is not installed.` };
   }
 
   const content = readFileSync(pluginPath, "utf-8");
-  if (!content.includes("ctx_plugin")) {
+  if (!content.includes("CAVEMAN")) {
     return { success: false, message: `Unknown plugin at ${pluginPath}. Will not remove.` };
   }
 
@@ -90,13 +90,12 @@ function uninstallPlugin(): { success: boolean; message: string } {
     }
     throw err;
   }
-  return { success: true, message: `Plugin removed from ${pluginPath}` };
+  return { success: true, message: `Caveman plugin removed from ${pluginPath}` };
 }
 
-function statusPlugin(): { installed: boolean; details: Record<string, string> } {
-  const pluginPath = getPluginFilePath();
+function statusCavemanPlugin(): { installed: boolean; details: Record<string, string> } {
+  const pluginPath = resolve(getPluginsDir(), "caveman.mjs");
   const pluginsDir = getPluginsDir();
-
   return {
     installed: existsSync(pluginPath),
     details: {
@@ -106,18 +105,73 @@ function statusPlugin(): { installed: boolean; details: Record<string, string> }
   };
 }
 
-function generatePluginMjs(sourcePath: string): string {
-  return `/**
- * ctx_plugin — unified opencode plugin (RTK + Caveman)
- *
- * Auto-generated from ctx_plugin/src/plugin.ts
- * Do not edit manually - changes will be overwritten.
- */
+// ─────────────────────────────────────────────────────────
+// Component: Routing Plugin
+// ─────────────────────────────────────────────────────────
 
-${readFileSync(sourcePath, "utf-8")}
+function installRoutingPlugin(): { success: boolean; message: string } {
+  const pluginsDir = getPluginsDir();
+  const pluginPath = resolve(pluginsDir, "routing.mjs");
+  const buildScript = resolve(getPluginRoot(), "bin", "build-plugins.mjs");
 
-export { CtxPlugin as ctxPlugin, default as ctxPlugin };
-`;
+  if (!existsSync(pluginsDir)) {
+    mkdirSync(pluginsDir, { recursive: true });
+  }
+
+  if (!existsSync(buildScript)) {
+    return { success: false, message: `build-plugins.mjs not found at ${buildScript}. Run: cd ctx_plugin && npm install && npm run build` };
+  }
+
+  try {
+    execSync(`node "${buildScript}"`, { stdio: "pipe", cwd: getPluginRoot() });
+  } catch (e) {
+    const err = e as { message?: string; stderr?: Buffer };
+    return { success: false, message: `build-plugins.mjs failed:\n${err.stderr?.toString() ?? err.message}` };
+  }
+
+  if (!existsSync(pluginPath)) {
+    return { success: false, message: `routing.mjs not generated at ${pluginPath}` };
+  }
+
+  return { success: true, message: `Routing plugin installed at ${pluginPath}. Restart opencode to use.` };
+}
+
+function uninstallRoutingPlugin(): { success: boolean; message: string } {
+  const pluginPath = resolve(getPluginsDir(), "routing.mjs");
+  if (!existsSync(pluginPath)) {
+    return { success: true, message: `Routing plugin is not installed.` };
+  }
+
+  const content = readFileSync(pluginPath, "utf-8");
+  if (!content.includes("RoutingPlugin")) {
+    return { success: false, message: `Unknown plugin at ${pluginPath}. Will not remove.` };
+  }
+
+  try {
+    rmSync(pluginPath);
+  } catch (err: unknown) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "EPERM" || code === "EACCES") {
+      return {
+        success: false,
+        message: `Permission denied. The file may be locked by another process (e.g. opencode).\nClose opencode and run: ctx_plugin uninstall routing`
+      };
+    }
+    throw err;
+  }
+  return { success: true, message: `Routing plugin removed from ${pluginPath}` };
+}
+
+function statusRoutingPlugin(): { installed: boolean; details: Record<string, string> } {
+  const pluginPath = resolve(getPluginsDir(), "routing.mjs");
+  const pluginsDir = getPluginsDir();
+  return {
+    installed: existsSync(pluginPath),
+    details: {
+      path: pluginPath,
+      dir_exists: existsSync(pluginsDir) ? "yes" : "no",
+    },
+  };
 }
 
 // ─────────────────────────────────────────────────────────
@@ -147,17 +201,17 @@ function statusRtk(): { installed: boolean; details: Record<string, string> } {
 }
 
 // ─────────────────────────────────────────────────────────
-// Component: Caveman
+// Component: Caveman Skills
 // ─────────────────────────────────────────────────────────
 
-function statusCaveman(): { installed: boolean; details: Record<string, string> } {
-  const plugin = statusPlugin();
+function statusCavemanSkills(): { installed: boolean; details: Record<string, string> } {
+  const skillsDir = resolve(getOpencodeConfigPath(), "..", "skills", "caveman");
   const flagPath = resolve(homedir(), ".config", "opencode", ".caveman-active");
 
   return {
-    installed: plugin.installed,
+    installed: existsSync(skillsDir),
     details: {
-      plugin: plugin.installed ? "installed" : "not installed",
+      skills: existsSync(skillsDir) ? "installed" : "not installed",
       flag: existsSync(flagPath) ? `active (${readFileSync(flagPath, "utf-8").trim()})` : "inactive",
     },
   };
@@ -202,15 +256,26 @@ function printStatus(): void {
   console.log(`\nctx_plugin Status Report`);
   console.log(`─`.repeat(50));
 
-  // Plugin
-  const plugin = statusPlugin();
-  console.log(`\nPlugin (RTK + Caveman):`);
-  if (plugin.installed) {
+  // Caveman plugin
+  const cavemanPlugin = statusCavemanPlugin();
+  console.log(`\nCaveman plugin:`);
+  if (cavemanPlugin.installed) {
     console.log(`  ✅ Installed`);
-    console.log(`    Path: ${plugin.details.path}`);
+    console.log(`    Path: ${cavemanPlugin.details.path}`);
   } else {
     console.log(`  ❌ Not installed`);
-    console.log(`    Run 'ctx_plugin install plugin' to install`);
+    console.log(`    Run 'ctx_plugin install caveman' to install`);
+  }
+
+  // Routing plugin
+  const routingPlugin = statusRoutingPlugin();
+  console.log(`\nRouting plugin:`);
+  if (routingPlugin.installed) {
+    console.log(`  ✅ Installed`);
+    console.log(`    Path: ${routingPlugin.details.path}`);
+  } else {
+    console.log(`  ❌ Not installed`);
+    console.log(`    Run 'ctx_plugin install routing' to install`);
   }
 
   // RTK
@@ -223,10 +288,10 @@ function printStatus(): void {
     console.log(`    ${rtk.details.message}`);
   }
 
-  // Caveman
-  const caveman = statusCaveman();
+  // Caveman skills
+  const caveman = statusCavemanSkills();
   console.log(`\nCaveman (communication mode):`);
-  console.log(`  Plugin: ${caveman.details.plugin}`);
+  console.log(`  Skills: ${caveman.details.skills}`);
   console.log(`  Mode: ${caveman.details.flag}`);
 
   // MCP note
@@ -251,17 +316,27 @@ function printDoctor(): void {
 
 function help(): void {
   console.log(`
-ctx_plugin CLI - Plugin management for opencode (RTK + Caveman)
+ctx_plugin CLI - Plugin management for opencode
 
 Components:
-  plugin   - Opencode plugin (RTK + Caveman)
+  caveman   - Caveman communication compression plugin
+  routing   - Routing + security + guidance plugin
+  rtk       - RTK binary availability check
 
 Commands:
-  ctx_plugin install [plugin]   Install plugin
-  ctx_plugin uninstall [plugin] Uninstall plugin
-  ctx_plugin status             Show installation status
-  ctx_plugin doctor             Run diagnostics
-  ctx_plugin security           Show security policies
+  ctx_plugin install [caveman|routing]   Install plugin
+  ctx_plugin uninstall [caveman|routing] Uninstall plugin
+  ctx_plugin status                       Show installation status
+  ctx_plugin doctor                       Run diagnostics
+  ctx_plugin security                     Show security policies
+
+Examples:
+  ctx_plugin install              # install both Caveman + Routing
+  ctx_plugin install caveman     # Caveman only
+  ctx_plugin install routing     # Routing only
+  ctx_plugin uninstall caveman   # remove Caveman, keep Routing
+  ctx_plugin status             # show all component statuses
+  ctx_plugin doctor             # run diagnostics
 
 MCP Servers:
   MCP servers are now in mcps/:
@@ -274,29 +349,44 @@ MCP Servers:
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const command = args[0] || "help";
-  const component = args[1];
+  const target = args[1];
 
   switch (command) {
     case "install": {
-      const target = component || "plugin";
-      if (target === "plugin" || target === "rtk" || target === "caveman" || target === "all") {
-        const result = installPlugin();
-        console.log(result.message);
+      if (!target || target === "all" || target === "caveman" || target === "routing") {
+        const results: string[] = [];
+        if (!target || target === "all" || target === "caveman") {
+          const r = installCavemanPlugin();
+          console.log(r.message);
+          if (!r.success) results.push(r.message);
+        }
+        if (!target || target === "all" || target === "routing") {
+          const r = installRoutingPlugin();
+          console.log(r.message);
+          if (!r.success) results.push(r.message);
+        }
+        if (results.length > 0) process.exit(1);
       } else {
         console.log(`Unknown component: ${target}`);
-        console.log(`Available: plugin`);
+        console.log(`Available: caveman, routing`);
       }
       break;
     }
 
     case "uninstall": {
-      const target = component || "plugin";
-      if (target === "plugin" || target === "rtk" || target === "caveman" || target === "all") {
-        const result = uninstallPlugin();
-        console.log(result.message);
-        if (!result.success) {
-          console.log(`Tip: close opencode first, then retry.`);
+      if (!target || target === "all" || target === "caveman" || target === "routing") {
+        const results: string[] = [];
+        if (!target || target === "all" || target === "caveman") {
+          const r = uninstallCavemanPlugin();
+          console.log(r.message);
+          if (!r.success) results.push(r.message);
         }
+        if (!target || target === "all" || target === "routing") {
+          const r = uninstallRoutingPlugin();
+          console.log(r.message);
+          if (!r.success) results.push(r.message);
+        }
+        if (results.length > 0) process.exit(1);
       } else {
         console.log(`Unknown component: ${target}`);
       }

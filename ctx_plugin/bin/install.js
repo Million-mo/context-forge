@@ -2,13 +2,14 @@
 /**
  * ctx_plugin — unified install dispatcher
  *
- * Calls install-rtk.js and/or install-caveman.js based on flags.
+ * Calls install-rtk.js, install-caveman.js, and/or install-routing.js based on flags.
  *
  * Usage:
- *   node bin/install.js              — install both RTK + Caveman
+ *   node bin/install.js              — install RTK + Caveman + Routing (all)
  *   node bin/install.js --rtk       — RTK only
  *   node bin/install.js --caveman   — Caveman only
- *   node bin/install.js --all        — both (same as no flag)
+ *   node bin/install.js --routing   — Routing only
+ *   node bin/install.js --all       — all (same as no flag)
  *   node bin/install.js --force      — pass --force to sub-installers
  */
 
@@ -34,7 +35,8 @@ const FORCE = process.argv.includes("--force") ? ["--force"] : []
 
 const installRtk     = process.argv.includes("--rtk")
 const installCaveman = process.argv.includes("--caveman")
-const installAll     = !installRtk && !installCaveman
+const installRouting  = process.argv.includes("--routing")
+const installAll     = !installRtk && !installCaveman && !installRouting
 
 let ok = true
 
@@ -44,6 +46,10 @@ if (installAll || installRtk) {
 
 if (installAll || installCaveman) {
   ok = run("install-caveman.js", FORCE) && ok
+}
+
+if (installAll || installRouting) {
+  ok = run("install-routing.js", FORCE) && ok
 }
 
 if (!ok) process.exit(1)

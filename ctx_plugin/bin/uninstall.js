@@ -2,13 +2,14 @@
 /**
  * ctx_plugin — uninstaller
  *
- * Removes RTK and/or Caveman from OpenCode's config directory.
+ * Removes RTK, Caveman, and/or Routing from OpenCode's config directory.
  *
  * Usage:
- *   node bin/uninstall.js              — remove both RTK + Caveman
+ *   node bin/uninstall.js              — remove RTK + Caveman + Routing
  *   node bin/uninstall.js --rtk        — RTK only
  *   node bin/uninstall.js --caveman    — Caveman only
- *   node bin/uninstall.js --all         — both (same as no flag)
+ *   node bin/uninstall.js --routing    — Routing only
+ *   node bin/uninstall.js --all         — all (same as no flag)
  */
 
 import {
@@ -33,7 +34,8 @@ const OC_DIR = opencodeDir()
 
 const uninstallRtk     = process.argv.includes("--rtk")
 const uninstallCaveman = process.argv.includes("--caveman")
-const uninstallAll     = !uninstallRtk && !uninstallCaveman
+const uninstallRouting  = process.argv.includes("--routing")
+const uninstallAll     = !uninstallRtk && !uninstallCaveman && !uninstallRouting
 
 function section(name) {
   console.log(`\n## ${name}`)
@@ -124,6 +126,25 @@ if (uninstallAll || uninstallCaveman) {
 
   // Remove opencode plugin file if it exists
   removeFile(join(OC_DIR, "plugins", "caveman.mjs"), "plugins/caveman.mjs")
+}
+
+// ── Routing ────────────────────────────────────────────────────────
+
+if (uninstallAll || uninstallRouting) {
+  section("Routing")
+
+  removeFile(join(OC_DIR, "plugins", "routing.mjs"), "plugins/routing.mjs")
+
+  // Clean empty plugins dir
+  const pluginsDir = join(OC_DIR, "plugins")
+  if (existsSync(pluginsDir)) {
+    try {
+      if (readdirSync(pluginsDir).length === 0) {
+        rmSync(pluginsDir)
+        console.log(`  ✓ removed empty plugins/ dir`)
+      }
+    } catch {}
+  }
 }
 
 console.log("\nDone. Restart opencode to apply changes.\n")

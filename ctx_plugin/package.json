@@ -6,7 +6,8 @@
     "ctx_plugin": "./dist/cli.js"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node bin/build-plugins.mjs",
+    "build:plugins": "node bin/build-plugins.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
