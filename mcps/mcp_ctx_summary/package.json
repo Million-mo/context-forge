@@ -14,7 +14,7 @@
     "build:start": "npm run build && node dist/server.js"
   },
   "dependencies": {
-    "@context-forge/shared-types": "workspace:*",
+    "@context-forge/shared-types": "file:../shared-types",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "better-sqlite3": "^11.10.0",
     "zod": "^3.0.0"
