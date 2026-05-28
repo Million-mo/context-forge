@@ -35,41 +35,35 @@ Located under `ctx_plugin/skills/`:
 
 ---
 
-## Quick Start
+## MCP Servers
 
-```bash
-cd ctx_plugin
-npm install
-npm run build
+Located under `mcps/`:
 
-# Install all components (MCP server + plugin)
-ctx_plugin install all
+| Package | Description |
+|---------|-------------|
+| `mcp_ctx_tool` | Sandboxed code execution (11 languages) + FTS5 content indexing/search |
+| `mcp_ctx_summary` | Intent-driven recall + FTS search over session summaries |
 
-# Or pieces individually
-ctx_plugin install mcp
-ctx_plugin install plugin
-
-# Check status
-ctx_plugin status
-
-# Run diagnostics
-ctx_plugin doctor
-```
-
-Restart opencode after installation.
+Both are registered into `opencode.json` via their respective `install.js` scripts.
 
 ---
 
-## CLI Reference
+## Quick Start
 
 ```bash
-ctx_plugin install [mcp|plugin|all]    # Install components
-ctx_plugin uninstall [mcp|plugin|all]   # Uninstall
-ctx_plugin status                        # Show what's installed
-ctx_plugin doctor                        # Diagnostics
-ctx_plugin security                      # Show security policies
-ctx_plugin purge [--days=N]              # Purge old sessions
+# Build all MCP packages
+cd mcps/mcp_ctx_tool && npm install && npm run build
+cd mcps/mcp_ctx_summary && npm install && npm run build
+
+# Install both MCP servers into opencode.json
+npx tsx scripts/install-all.ts
+
+# Or individually
+node mcps/mcp_ctx_tool/dist/install.js
+node mcps/mcp_ctx_summary/dist/install.js
 ```
+
+Restart opencode after installation.
 
 ---
 
@@ -79,32 +73,40 @@ ctx_plugin purge [--days=N]              # Purge old sessions
 context_forge/
 ├── README.md                  # This file
 ├── .opencode/                 # opencode workspace config
-├── ctx_plugin/                # Core plugin
+├── mcps/                     # MCP server packages
+│   ├── mcp_ctx_tool/         # Code execution + FTS5 search
+│   │   └── src/
+│   │       ├── server.ts      # MCP stdio server
+│   │       ├── executor.ts    # PolyglotExecutor (sandbox code execution)
+│   │       ├── runtime.ts     # Runtime detection
+│   │       ├── store.ts       # FTS5 BM25 + trigram RRF search
+│   │       ├── session-db.ts   # SQLite session event store
+│   │       └── db-base.ts     # SQLite base wrapper
+│   ├── mcp_ctx_summary/      # Context summary + recall
+│   │   └── src/
+│   │       ├── server.ts      # MCP stdio server
+│   │       ├── llm.ts         # Recall LLM client
+│   │       └── recall-prompts.ts
+│   └── shared-types/         # Shared TypeScript types
+├── ctx_plugin/               # Core opencode plugin
 │   ├── README.md              # Full plugin documentation
 │   ├── src/
 │   │   ├── plugin.ts          # opencode plugin (RTK + Caveman hooks)
-│   │   ├── cli.ts             # Install/uninstall/status CLI
-│   │   ├── security.ts        # Policy engine + shell-escape scanner
-│   │   ├── session-db.ts      # SQLite event store
-│   │   ├── rtk.ts             # RTK rewrite integration
-│   │   ├── mcp/
-│   │   │   ├── server.ts      # MCP server (stdio)
-│   │   │   ├── executor.ts    # PolyglotExecutor (sandbox code execution)
-│   │   │   ├── runtime.ts     # Runtime detection
-│   │   │   ├── store.ts       # FTS5 BM25 + trigram RRF search
-│   │   │   └── types.ts       # Shared types
+│   │   ├── cli.ts            # Install/uninstall/status CLI
+│   │   ├── security.ts       # Policy engine + shell-escape scanner
 │   │   └── hooks/
 │   │       ├── routing.ts     # Tool routing decisions
-│   │       ├── guidance.ts    # Per-session guidance throttle
-│   │       └── tool-naming.ts # Tool name normalization
+│   │       ├── guidance.ts   # Per-session guidance throttle
+│   │       └── tool-naming.ts
 │   └── skills/
-│       ├── caveman/           # Six intensity levels
-│       ├── cavecrew/          # Subagent delegation guide
-│       ├── caveman-commit/    # Commit messages
-│       ├── caveman-review/    # Code review
-│       ├── caveman-compress/  # Text compression
-│       └── caveman-help/      # Help skill
-└── .deepseek/                 # DeepSeek workspace config
+│       ├── caveman/          # Six intensity levels
+│       ├── cavecrew/         # Subagent delegation guide
+│       ├── caveman-commit/
+│       ├── caveman-review/
+│       ├── caveman-compress/
+│       └── caveman-help/
+└── scripts/
+    └── install-all.ts         # One-shot MCP installer
 ```
 
 ---
@@ -124,9 +126,13 @@ context_forge/
 ```json
 {
   "mcp": {
-    "ctx_plugin": {
+    "mcp_ctx_tool": {
       "type": "local",
-      "command": ["node", "/absolute/path/to/dist/mcp/server.js"]
+      "command": ["node", "/absolute/path/to/mcps/mcp_ctx_tool/dist/server.js"]
+    },
+    "mcp_ctx_summary": {
+      "type": "local",
+      "command": ["node", "/absolute/path/to/mcps/mcp_ctx_summary/dist/server.js"]
     }
   }
 }

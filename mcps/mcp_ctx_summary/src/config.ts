@@ -19,8 +19,6 @@ export interface RecallConfig {
 
 function loadConfig(): RecallConfig {
   const configPath = resolve(process.cwd(), "config.json")
-  
-  // Fall back to example if config doesn't exist
   const fallbackPath = resolve(process.cwd(), "config.json.example")
   const finalPath = existsSync(configPath) ? configPath : fallbackPath
 
@@ -44,14 +42,11 @@ function loadConfig(): RecallConfig {
     config = JSON.parse(raw) as RecallConfig
     config.dataDir = DATA_DIR
   }
-  
-  // Fall back to env vars for secrets
+
   if (process.env.LLM_API_KEY) {
     config.llm.apiKey = process.env.LLM_API_KEY
   }
 
-  // Local/self-hosted LLM (default) doesn't require API key
-  // Only require key for anthropic (which always needs one)
   if (!config.llm.apiKey && config.llm.provider === "anthropic") {
     console.warn("[config] No apiKey set for anthropic — recall generation disabled")
   }

@@ -1,8 +1,7 @@
 /**
- * MCP Server for ctx_plugin
+ * MCP Server for mcp_ctx_tool
  *
  * Provides sandboxed code execution and FTS5 search capabilities.
- * This is the main entry point for the MCP protocol communication.
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -18,18 +17,16 @@ import { z } from "zod";
 import { PolyglotExecutor } from "./executor.js";
 import { getAvailableLanguages, getRuntimeSummary, getRuntimeInfo } from "./runtime.js";
 import { ContentStore } from "./store.js";
+import { initSessionDb, cleanupOldSessions, deleteSession, getSessionDbPath } from "./session-db.js";
 
-// Server version
 const VERSION = "0.3.0";
 
-// Get project directory from environment or cwd
 function getProjectDir(): string {
   return process.env.CLAUDE_PROJECT_DIR || process.env.PROJECT_DIR || process.cwd();
 }
 
-// Create MCP server instance
 const server = new McpServer(
-  { name: "ctx_tool_mcp", version: VERSION },
+  { name: "mcp_ctx_tool", version: VERSION },
   {
     capabilities: {
       tools: {},
@@ -39,10 +36,8 @@ const server = new McpServer(
   }
 );
 
-// Create executor instance
 const executor = new PolyglotExecutor();
 
-// Create content store (lazy initialization)
 let contentStore: ContentStore | null = null;
 
 function getStore(): ContentStore {
@@ -52,18 +47,10 @@ function getStore(): ContentStore {
   return contentStore;
 }
 
-// Register empty prompts/resources on the underlying server
-server.server.setRequestHandler(ListPromptsRequestSchema, async () => ({
-  prompts: [],
-}));
-server.server.setRequestHandler(ListResourcesRequestSchema, async () => ({
-  resources: [],
-}));
-server.server.setRequestHandler(ListResourceTemplatesRequestSchema, async () => ({
-  resourceTemplates: [],
-}));
+server.server.setRequestHandler(ListPromptsRequestSchema, async () => ({ prompts: [] }));
+server.server.setRequestHandler(ListResourcesRequestSchema, async () => ({ resources: [] }));
+server.server.setRequestHandler(ListResourceTemplatesRequestSchema, async () => ({ resourceTemplates: [] }));
 
-// Tool schemas using Zod
 const ExecuteSchema = z.object({
   language: z.enum(["javascript", "typescript", "python", "shell", "ruby", "go", "rust", "php", "perl", "r", "elixir"]),
   code: z.string(),
@@ -117,17 +104,14 @@ const PurgeSchema = z.object({
   daysOld: z.number().optional(),
 });
 
-// Register tools
 server.registerTool(
   "ctx_ping",
   {
     title: "Health Check",
-    description: "Health check for ctx_plugin MCP server",
+    description: "Health check for mcp_ctx_tool MCP server",
     inputSchema: z.object({}),
   },
-  async () => ({
-    content: [{ type: "text", text: "pong" }],
-  })
+  async () => ({ content: [{ type: "text", text: "pong" }] })
 );
 
 server.registerTool(
@@ -143,10 +127,7 @@ server.registerTool(
       code: args.code,
       timeout: args.timeout ?? 30000,
     });
-
-    return {
-      content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-    };
+    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
   }
 );
 
@@ -161,9 +142,7 @@ server.registerTool(
     const runtimes = executor.runtimes;
     const available = getAvailableLanguages(runtimes);
     const summary = getRuntimeSummary(runtimes);
-    return {
-      content: [{ type: "text", text: JSON.stringify({ available, summary }, null, 2) }],
-    };
+    return { content: [{ type: "text", text: JSON.stringify({ available, summary }, null, 2) }] };
   }
 );
 
@@ -176,25 +155,15 @@ server.registerTool(
   },
   async (args) => {
     const store = getStore();
-
     if (args.path) {
       const result = await store.indexFile(args.path, { source: args.source });
-      return {
-        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-      };
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
     }
-
     if (args.content) {
       const result = await store.index(args.content, { source: args.source });
-      return {
-        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-      };
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
     }
-
-    return {
-      content: [{ type: "text", text: "Provide either 'path' or 'content'" }],
-      isError: true,
-    };
+    return { content: [{ type: "text", text: "Provide either 'path' or 'content'" }], isError: true };
   }
 );
 
@@ -211,10 +180,7 @@ server.registerTool(
       source: args.source,
       contentType: args.contentType,
     });
-
-    return {
-      content: [{ type: "text", text: JSON.stringify(results, null, 2) }],
-    };
+    return { content: [{ type: "text", text: JSON.stringify(results, null, 2) }] };
   }
 );
 
@@ -228,9 +194,7 @@ server.registerTool(
   async () => {
     const store = getStore();
     const stats = store.getStats();
-    return {
-      content: [{ type: "text", text: JSON.stringify(stats, null, 2) }],
-    };
+    return { content: [{ type: "text", text: JSON.stringify(stats, null, 2) }] };
   }
 );
 
@@ -248,9 +212,7 @@ server.registerTool(
       env: args.env,
       timeout: args.timeout,
     });
-    return {
-      content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-    };
+    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
   }
 );
 
@@ -267,9 +229,7 @@ server.registerTool(
       sequential: args.sequential ?? false,
       stopOnError: args.stopOnError ?? false,
     });
-    return {
-      content: [{ type: "text", text: JSON.stringify(results, null, 2) }],
-    };
+    return { content: [{ type: "text", text: JSON.stringify(results, null, 2) }] };
   }
 );
 
@@ -281,62 +241,39 @@ server.registerTool(
     inputSchema: PurgeSchema,
   },
   async (args) => {
-    const { initSessionDb, cleanupOldSessions, deleteSession, getSessionDbPath } = await import("../session-db.js");
     initSessionDb(getProjectDir());
-
     if (args.sessionId) {
       deleteSession(args.sessionId);
-      return {
-        content: [{ type: "text", text: `Deleted session: ${args.sessionId}` }],
-      };
+      return { content: [{ type: "text", text: `Deleted session: ${args.sessionId}` }] };
     }
-
     const purged = cleanupOldSessions(args.daysOld ?? 0);
-    return {
-      content: [{ type: "text", text: `Purged ${purged} old sessions from ${getSessionDbPath()}` }],
-    };
+    return { content: [{ type: "text", text: `Purged ${purged} old sessions from ${getSessionDbPath()}` }] };
   }
 );
 
-// Register tools list handler
 server.server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
-    {
-      name: "ctx_ping",
-      description: "Health check for ctx_plugin MCP server",
-      inputSchema: { type: "object", properties: {} },
-    },
+    { name: "ctx_ping", description: "Health check for mcp_ctx_tool", inputSchema: { type: "object", properties: {} } },
     {
       name: "ctx_execute",
       description: "Execute code in sandbox with multiple language support",
       inputSchema: {
         type: "object",
         properties: {
-          language: {
-            type: "string",
-            enum: ["javascript", "typescript", "python", "shell", "ruby", "go", "rust", "php", "perl", "r", "elixir"],
-          },
+          language: { type: "string", enum: ["javascript", "typescript", "python", "shell", "ruby", "go", "rust", "php", "perl", "r", "elixir"] },
           code: { type: "string" },
           timeout: { type: "number" },
         },
         required: ["language", "code"],
       },
     },
-    {
-      name: "ctx_runtimes",
-      description: "List available language runtimes",
-      inputSchema: { type: "object", properties: {} },
-    },
+    { name: "ctx_runtimes", description: "List available language runtimes", inputSchema: { type: "object", properties: {} } },
     {
       name: "ctx_index",
       description: "Index file or content into searchable store",
       inputSchema: {
         type: "object",
-        properties: {
-          content: { type: "string" },
-          path: { type: "string" },
-          source: { type: "string" },
-        },
+        properties: { content: { type: "string" }, path: { type: "string" }, source: { type: "string" } },
       },
     },
     {
@@ -344,31 +281,17 @@ server.server.setRequestHandler(ListToolsRequestSchema, async () => ({
       description: "Search indexed content with BM25 + trigram RRF fusion",
       inputSchema: {
         type: "object",
-        properties: {
-          query: { type: "string" },
-          limit: { type: "number" },
-          source: { type: "string" },
-          contentType: { type: "string", enum: ["code", "prose"] },
-        },
+        properties: { query: { type: "string" }, limit: { type: "number" }, source: { type: "string" }, contentType: { type: "string", enum: ["code", "prose"] } },
         required: ["query"],
       },
     },
-    {
-      name: "ctx_stats",
-      description: "Get content store statistics",
-      inputSchema: { type: "object", properties: {} },
-    },
+    { name: "ctx_stats", description: "Get content store statistics", inputSchema: { type: "object", properties: {} } },
     {
       name: "ctx_execute_file",
       description: "Read and execute a script file with sandboxed environment",
       inputSchema: {
         type: "object",
-        properties: {
-          path: { type: "string" },
-          args: { type: "array", items: { type: "string" } },
-          env: { type: "object", additionalProperties: { type: "string" } },
-          timeout: { type: "number" },
-        },
+        properties: { path: { type: "string" }, args: { type: "array", items: { type: "string" } }, env: { type: "object", additionalProperties: { type: "string" } }, timeout: { type: "number" } },
         required: ["path"],
       },
     },
@@ -378,55 +301,23 @@ server.server.setRequestHandler(ListToolsRequestSchema, async () => ({
       inputSchema: {
         type: "object",
         properties: {
-          commands: {
-            type: "array",
-            items: {
-              type: "object",
-              properties: {
-                language: { type: "string" },
-                code: { type: "string" },
-              },
-              required: ["language", "code"],
-            },
-          },
+          commands: { type: "array", items: { type: "object", properties: { language: { type: "string" }, code: { type: "string" } }, required: ["language", "code"] } },
           sequential: { type: "boolean" },
           stopOnError: { type: "boolean" },
         },
         required: ["commands"],
       },
     },
-    {
-      name: "ctx_fetch_and_index",
-      description: "Fetch web content and index it for search",
-      inputSchema: {
-        type: "object",
-        properties: {
-          url: { type: "string" },
-          source: { type: "string" },
-        },
-        required: ["url"],
-      },
-    },
-    {
-      name: "ctx_doctor",
-      description: "Run system diagnostics for ctx_plugin installation",
-      inputSchema: { type: "object", properties: {} },
-    },
+    { name: "ctx_fetch_and_index", description: "Fetch web content and index it for search", inputSchema: { type: "object", properties: { url: { type: "string" }, source: { type: "string" } }, required: ["url"] } },
+    { name: "ctx_doctor", description: "Run system diagnostics", inputSchema: { type: "object", properties: {} } },
     {
       name: "ctx_purge",
       description: "Clear session data from the SQLite store",
-      inputSchema: {
-        type: "object",
-        properties: {
-          sessionId: { type: "string" },
-          daysOld: { type: "number" },
-        },
-      },
+      inputSchema: { type: "object", properties: { sessionId: { type: "string" }, daysOld: { type: "number" } } },
     },
   ],
 }));
 
-// Register call tool handler
 server.server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
 
@@ -438,98 +329,60 @@ server.server.setRequestHandler(CallToolRequestSchema, async (request) => {
     if (name === "ctx_execute") {
       const parsed = ExecuteSchema.safeParse(args);
       if (!parsed.success) {
-        return {
-          content: [{ type: "text", text: `Invalid arguments: ${parsed.error.message}` }],
-          isError: true,
-        };
+        return { content: [{ type: "text", text: `Invalid arguments: ${parsed.error.message}` }], isError: true };
       }
-
       const { language, code, timeout } = parsed.data;
-      const result = await executor.execute({
-        language,
-        code,
-        timeout: timeout ?? 30000,
-      });
-
-      return {
-        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-      };
+      const result = await executor.execute({ language, code, timeout: timeout ?? 30000 });
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
     }
 
     if (name === "ctx_runtimes") {
       const runtimes = executor.runtimes;
       const available = getAvailableLanguages(runtimes);
       const summary = getRuntimeSummary(runtimes);
-      return {
-        content: [{ type: "text", text: JSON.stringify({ available, summary }, null, 2) }],
-      };
+      return { content: [{ type: "text", text: JSON.stringify({ available, summary }, null, 2) }] };
     }
 
     if (name === "ctx_index") {
       const parsed = IndexSchema.safeParse(args);
       if (!parsed.success) {
-        return {
-          content: [{ type: "text", text: `Invalid arguments: ${parsed.error.message}` }],
-          isError: true,
-        };
+        return { content: [{ type: "text", text: `Invalid arguments: ${parsed.error.message}` }], isError: true };
       }
-
       const store = getStore();
       if (parsed.data.path) {
         const result = await store.indexFile(parsed.data.path, { source: parsed.data.source });
-        return {
-          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-        };
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       }
-
       if (parsed.data.content) {
         const result = await store.index(parsed.data.content, { source: parsed.data.source });
-        return {
-          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-        };
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       }
-
-      return {
-        content: [{ type: "text", text: "Provide either 'path' or 'content'" }],
-        isError: true,
-      };
+      return { content: [{ type: "text", text: "Provide either 'path' or 'content'" }], isError: true };
     }
 
     if (name === "ctx_search") {
       const parsed = SearchSchema.safeParse(args);
       if (!parsed.success) {
-        return {
-          content: [{ type: "text", text: `Invalid arguments: ${parsed.error.message}` }],
-          isError: true,
-        };
+        return { content: [{ type: "text", text: `Invalid arguments: ${parsed.error.message}` }], isError: true };
       }
-
       const store = getStore();
       const results = store.search(parsed.data.query, parsed.data.limit ?? 10, {
         source: parsed.data.source,
         contentType: parsed.data.contentType,
       });
-
-      return {
-        content: [{ type: "text", text: JSON.stringify(results, null, 2) }],
-      };
+      return { content: [{ type: "text", text: JSON.stringify(results, null, 2) }] };
     }
 
     if (name === "ctx_stats") {
       const store = getStore();
       const stats = store.getStats();
-      return {
-        content: [{ type: "text", text: JSON.stringify(stats, null, 2) }],
-      };
+      return { content: [{ type: "text", text: JSON.stringify(stats, null, 2) }] };
     }
 
     if (name === "ctx_execute_file") {
       const parsed = ExecuteFileSchema.safeParse(args);
       if (!parsed.success) {
-        return {
-          content: [{ type: "text", text: `Invalid arguments: ${parsed.error.message}` }],
-          isError: true,
-        };
+        return { content: [{ type: "text", text: `Invalid arguments: ${parsed.error.message}` }], isError: true };
       }
       const result = await executor.executeFile({
         path: parsed.data.path,
@@ -537,68 +390,43 @@ server.server.setRequestHandler(CallToolRequestSchema, async (request) => {
         env: parsed.data.env,
         timeout: parsed.data.timeout,
       });
-      return {
-        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-        isError: result.exitCode !== 0,
-      };
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], isError: result.exitCode !== 0 };
     }
 
     if (name === "ctx_batch_execute") {
       const parsed = BatchExecuteSchema.safeParse(args);
       if (!parsed.success) {
-        return {
-          content: [{ type: "text", text: `Invalid arguments: ${parsed.error.message}` }],
-          isError: true,
-        };
+        return { content: [{ type: "text", text: `Invalid arguments: ${parsed.error.message}` }], isError: true };
       }
       const result = await executor.batchExecute({
         commands: parsed.data.commands,
         sequential: parsed.data.sequential,
         stopOnError: parsed.data.stopOnError,
       });
-      return {
-        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-      };
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
     }
 
     if (name === "ctx_fetch_and_index") {
       const parsed = FetchAndIndexSchema.safeParse(args);
       if (!parsed.success) {
-        return {
-          content: [{ type: "text", text: `Invalid arguments: ${parsed.error.message}` }],
-          isError: true,
-        };
+        return { content: [{ type: "text", text: `Invalid arguments: ${parsed.error.message}` }], isError: true };
       }
       try {
         const response = await fetch(parsed.data.url, {
-          headers: { "User-Agent": "ctx_plugin/1.0" },
+          headers: { "User-Agent": "mcp_ctx_tool/1.0" },
           signal: AbortSignal.timeout(15000),
         });
         if (!response.ok) {
-          return {
-            content: [{ type: "text", text: `HTTP ${response.status}: ${response.statusText}` }],
-            isError: true,
-          };
+          return { content: [{ type: "text", text: `HTTP ${response.status}: ${response.statusText}` }], isError: true };
         }
         const text = await response.text();
         const store = getStore();
         const indexResult = await store.index(text, { source: parsed.data.source ?? parsed.data.url });
         return {
-          content: [{
-            type: "text",
-            text: JSON.stringify({
-              url: parsed.data.url,
-              size: text.length,
-              indexed: indexResult.totalChunks,
-              sourceId: indexResult.sourceId,
-            }, null, 2),
-          }],
+          content: [{ type: "text", text: JSON.stringify({ url: parsed.data.url, size: text.length, indexed: indexResult.totalChunks, sourceId: indexResult.sourceId }, null, 2) }],
         };
       } catch (error) {
-        return {
-          content: [{ type: "text", text: `Fetch failed: ${error instanceof Error ? error.message : String(error)}` }],
-          isError: true,
-        };
+        return { content: [{ type: "text", text: `Fetch failed: ${error instanceof Error ? error.message : String(error)}` }], isError: true };
       }
     }
 
@@ -629,17 +457,9 @@ server.server.setRequestHandler(CallToolRequestSchema, async (request) => {
       try {
         const store = getStore();
         const stats = store.getStats();
-        checks.push({
-          check: "content store",
-          status: "pass",
-          detail: `${stats.totalChunks} chunks, ${stats.totalSources} sources`,
-        });
+        checks.push({ check: "content store", status: "pass", detail: `${stats.totalChunks} chunks, ${stats.totalSources} sources` });
       } catch (e) {
-        checks.push({
-          check: "content store",
-          status: "fail",
-          detail: `${e instanceof Error ? e.message : String(e)}`,
-        });
+        checks.push({ check: "content store", status: "fail", detail: `${e instanceof Error ? e.message : String(e)}` });
       }
 
       const passed = checks.filter(c => c.status === "pass").length;
@@ -649,57 +469,38 @@ server.server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return {
         content: [{
           type: "text",
-          text: JSON.stringify({
-            version: VERSION,
-            platform: process.platform,
-            node: process.version,
-            summary: { passed, failed, warned },
-            checks,
-          }, null, 2),
+          text: JSON.stringify({ version: VERSION, platform: process.platform, node: process.version, summary: { passed, failed, warned }, checks }, null, 2),
         }],
       };
     }
 
     if (name === "ctx_purge") {
-      const { initSessionDb, cleanupOldSessions, deleteSession, getSessionDbPath } = await import("../session-db.js");
       initSessionDb(getProjectDir());
       const parsed = PurgeSchema.safeParse(args ?? {});
-
       if (parsed.success && parsed.data.sessionId) {
         deleteSession(parsed.data.sessionId);
         return { content: [{ type: "text", text: `Deleted session: ${parsed.data.sessionId}` }] };
       }
-
       const purged = cleanupOldSessions(parsed.success ? (parsed.data.daysOld ?? 0) : 0);
-      return {
-        content: [{ type: "text", text: `Purged ${purged} old sessions from ${getSessionDbPath()}` }],
-      };
+      return { content: [{ type: "text", text: `Purged ${purged} old sessions from ${getSessionDbPath()}` }] };
     }
 
-    return {
-      content: [{ type: "text", text: `Unknown tool: ${name}` }],
-      isError: true,
-    };
+    return { content: [{ type: "text", text: `Unknown tool: ${name}` }], isError: true };
   } catch (error) {
-    return {
-      content: [{ type: "text", text: `Error: ${error instanceof Error ? error.message : String(error)}` }],
-      isError: true,
-    };
+    return { content: [{ type: "text", text: `Error: ${error instanceof Error ? error.message : String(error)}` }], isError: true };
   }
 });
 
-// Export for testing
 export { server, executor };
 
-// Main entry point
 async function main() {
-  console.error("[ctx_tool_mcp] MCP server starting...");
+  console.error("[mcp_ctx_tool] MCP server starting...");
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error("[ctx_tool_mcp] MCP server connected");
+  console.error("[mcp_ctx_tool] MCP server connected");
 }
 
 main().catch((error) => {
-  console.error("[ctx_plugin] Fatal error:", error);
+  console.error("[mcp_ctx_tool] Fatal error:", error);
   process.exit(1);
 });

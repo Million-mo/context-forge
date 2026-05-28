@@ -1,20 +1,14 @@
 /**
- * session-db.ts — Lightweight session event store for ctx_plugin
+ * Session event store for mcp_ctx_tool.
  *
  * Stores tool call events, session metadata, and tool-call statistics.
- * Simplified from context-mode's SessionDB (src/session/db.ts).
- *
- * Schema:
- *   events:     tool call results, redirects, guidance, security blocks
- *   sessions:   per-session metadata
- *   tool_calls: persistent tool call counters
  */
 
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync } from "node:fs";
 import { resolve, join, dirname } from "node:path";
 import { homedir } from "node:os";
-import { Database } from "./mcp/db-base.js";
+import { Database } from "./db-base.js";
 
 // ─────────────────────────────────────────────────────────
 // Types
@@ -64,7 +58,7 @@ function getSessionsDir(): string {
     (process.env.XDG_DATA_HOME
       ? resolve(process.env.XDG_DATA_HOME, "ctx_plugin")
       : process.platform === "win32"
-        ? resolve(process.env.APPDATA || join(homedir(), "AppData", "Roaming"), "ctx_plugin")
+        ? resolve(process.env.APPDATA || resolve(homedir(), "AppData", "Roaming"), "ctx_plugin")
         : resolve(homedir(), ".local", "share", "ctx_plugin"));
   return resolve(base, "sessions");
 }
@@ -97,7 +91,6 @@ function getDbOrNull(): Database | null {
   return _db;
 }
 
-/** Lazily initialize the database. Call before any operations. */
 export function initSessionDb(projectDir?: string): void {
   if (!_db) {
     _dbLazyPath = resolveSessionDbPath(projectDir);
@@ -105,7 +98,6 @@ export function initSessionDb(projectDir?: string): void {
   }
 }
 
-/** Close and dispose the database. */
 export function closeSessionDb(): void {
   if (_db) {
     _db.close();
@@ -113,7 +105,6 @@ export function closeSessionDb(): void {
   }
 }
 
-/** Get the database path. */
 export function getSessionDbPath(): string {
   return _dbLazyPath ?? resolveSessionDbPath();
 }
@@ -134,15 +125,11 @@ function clampNonNegativeInt(value: unknown): number {
 // Events
 // ═══════════════════════════════════════════
 
-/**
- * Insert a tool event. Idempotent with basic dedup.
- */
 export function insertEvent(event: ToolEvent): void {
   const db = getDbOrNull();
   if (!db) return;
 
   try {
-    // Upsert session meta
     db.prepare(
       `INSERT OR IGNORE INTO sessions (session_id, project_dir)
        VALUES (?, ?)`,
@@ -154,7 +141,6 @@ export function insertEvent(event: ToolEvent): void {
        WHERE session_id = ?`,
     ).run(event.session_id);
 
-    // Evict old events if needed
     const count = db.prepare(
       `SELECT COUNT(*) as cnt FROM events WHERE session_id = ?`,
     ).get(event.session_id) as { cnt: number } | undefined;
@@ -168,7 +154,6 @@ export function insertEvent(event: ToolEvent): void {
       ).run(event.session_id, Math.floor(MAX_EVENTS_PER_SESSION * 0.1));
     }
 
-    // Insert event
     db.prepare(
       `INSERT INTO events (session_id, event_type, tool, args, result, bytes_avoided, bytes_returned)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -186,9 +171,6 @@ export function insertEvent(event: ToolEvent): void {
   }
 }
 
-/**
- * Get events for a session with optional filtering.
- */
 export function getEvents(
   sessionId: string,
   opts?: { type?: EventType; limit?: number },
@@ -219,9 +201,6 @@ export function getEvents(
 // Tool Call Counters
 // ═══════════════════════════════════════════
 
-/**
- * Increment the persistent tool-call counter.
- */
 export function incrementToolCall(
   sessionId: string,
   tool: string,
@@ -247,9 +226,6 @@ export function incrementToolCall(
   }
 }
 
-/**
- * Get aggregated tool-call stats for a session.
- */
 export function getToolCallStats(sessionId: string): ToolCallStats {
   const db = getDbOrNull();
   if (!db) return { totalCalls: 0, totalBytesReturned: 0, byTool: {} };
@@ -292,9 +268,6 @@ export function getToolCallStats(sessionId: string): ToolCallStats {
 // Session Meta
 // ═══════════════════════════════════════════
 
-/**
- * Ensure a session exists in the meta table.
- */
 export function ensureSession(sessionId: string, projectDir: string): void {
   const db = getDbOrNull();
   if (!db) return;
@@ -308,9 +281,6 @@ export function ensureSession(sessionId: string, projectDir: string): void {
   }
 }
 
-/**
- * Get session metadata.
- */
 export function getSessionMeta(sessionId: string): SessionMeta | null {
   const db = getDbOrNull();
   if (!db) return null;
@@ -324,9 +294,6 @@ export function getSessionMeta(sessionId: string): SessionMeta | null {
   }
 }
 
-/**
- * Delete all data for a session.
- */
 export function deleteSession(sessionId: string): void {
   const db = getDbOrNull();
   if (!db) return;
@@ -340,9 +307,6 @@ export function deleteSession(sessionId: string): void {
   }
 }
 
-/**
- * Delete sessions older than maxAgeDays.
- */
 export function cleanupOldSessions(maxAgeDays: number = 7): number {
   const db = getDbOrNull();
   if (!db) return 0;
@@ -363,9 +327,6 @@ export function cleanupOldSessions(maxAgeDays: number = 7): number {
   }
 }
 
-/**
- * Get total bytes avoided (redirected content) for a session.
- */
 export function getBytesAvoided(sessionId: string): number {
   const db = getDbOrNull();
   if (!db) return 0;

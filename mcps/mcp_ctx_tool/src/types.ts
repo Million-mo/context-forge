@@ -1,10 +1,7 @@
 /**
- * Shared type definitions for ctx_plugin MCP server.
+ * Shared type definitions for mcp_ctx_tool.
  */
 
-/**
- * Result returned by PolyglotExecutor after running a code snippet.
- */
 export interface ExecResult {
   stdout: string;
   stderr: string;
@@ -13,9 +10,6 @@ export interface ExecResult {
   backgrounded?: boolean;
 }
 
-/**
- * Supported execution languages.
- */
 export type Language =
   | "javascript"
   | "typescript"
@@ -29,9 +23,6 @@ export type Language =
   | "r"
   | "elixir";
 
-/**
- * Runtime information for a language.
- */
 export interface RuntimeInfo {
   command: string;
   available: boolean;
@@ -39,9 +30,6 @@ export interface RuntimeInfo {
   preferred: boolean;
 }
 
-/**
- * Map of all language runtimes.
- */
 export interface RuntimeMap {
   javascript: string;
   typescript: string | null;

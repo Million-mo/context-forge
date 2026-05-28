@@ -1,5 +1,5 @@
 /**
- * Summary MCP Server
+ * Summary MCP Server — mcp_ctx_summary
  *
  * Provides retrieval tools over the shared summaries database
  * (data/summaries.db), populated by transform-server.
@@ -20,11 +20,9 @@ import { z } from "zod"
 import { existsSync, statSync } from "fs"
 import { resolve } from "path"
 import Database from "better-sqlite3"
-import type { RecallOptions, RecallResult, StoredMessage, SummaryWithSession, TurnSummary } from "@context-forge/types"
-import { buildRecallPrompt } from "./prompts.js"
+import type { RecallOptions, RecallResult, StoredMessage, SummaryWithSession, TurnSummary } from "./types.js"
+import { buildRecallPrompt } from "./recall-prompts.js"
 import { createRecallLLMClient } from "./llm.js"
-
-// ─── Config ────────────────────────────────────────────────────────────────────
 
 function getDataDir(): string {
   return process.env.DATA_DIR || resolve(process.cwd(), "data")
@@ -33,8 +31,6 @@ function getDataDir(): string {
 function getDbPath(): string {
   return resolve(getDataDir(), "summaries.db")
 }
-
-// ─── Types ─────────────────────────────────────────────────────────────────────
 
 interface SummaryRow {
   turn_index: number
@@ -64,18 +60,14 @@ interface MessageRow {
   seq_in_turn: number
 }
 
-// ─── DB ───────────────────────────────────────────────────────────────────────
-
 let db: any = null
 
 function openDb(): any {
   if (db) return db
-
   const path = getDbPath()
   if (!existsSync(path)) {
     throw new Error(`Database not found at ${path}. Start transform-server first.`)
   }
-
   db = new Database(path, { readonly: true })
   db.pragma("journal_mode = WAL")
   return db
@@ -113,8 +105,6 @@ function rowToMessage(row: MessageRow): StoredMessage {
   }
 }
 
-// ─── Query functions ───────────────────────────────────────────────────────────
-
 interface SummaryRowWithSession extends SummaryRow {
   session_id: string
   turn_index: number
@@ -122,7 +112,6 @@ interface SummaryRowWithSession extends SummaryRow {
 
 function searchSummaries(query: string, limit: number, sessionId?: string): SummaryWithSession[] {
   const database = openDb()
-
   const escaped = query
     .replace(/['"*()\-:^~]/g, " ")
     .split(/\s+/)
@@ -136,7 +125,6 @@ function searchSummaries(query: string, limit: number, sessionId?: string): Summ
 
   let rows: SummaryRowWithSession[] = []
 
-  // Try FTS first
   try {
     let stmt: any
     if (sessionId) {
@@ -160,17 +148,13 @@ function searchSummaries(query: string, limit: number, sessionId?: string): Summ
       `)
       rows = stmt.all(escaped, limit)
     }
-
-    // If FTS returned results, return them
     if (rows.length > 0) {
       return rows.map(rowToSummaryWithSession)
     }
   } catch {
-    // FTS error — continue to LIKE fallback
+    // FTS error — fall through to LIKE
   }
 
-  // FTS failed or no results — try LIKE fallback
-  // Escape SQL LIKE wildcards (% and _) to prevent unintended matches
   const escapedQuery = query.replace(/[%_]/g, "\\$&")
   const likePattern = `%${escapedQuery}%`
   let sql: string
@@ -191,17 +175,12 @@ function searchSummaries(query: string, limit: number, sessionId?: string): Summ
 }
 
 function rowToSummaryWithSession(row: SummaryRowWithSession): SummaryWithSession {
-  return {
-    ...rowToSummary(row),
-    sessionId: row.session_id,
-  }
+  return { ...rowToSummary(row), sessionId: row.session_id }
 }
 
 function listBySession(sessionId: string): SummaryWithSession[] {
   const database = openDb()
-  
   let rows: SummaryRowWithSession[]
-  
   if (sessionId === "%") {
     rows = database.prepare(`
       SELECT c.*, idx.session_id, idx.turn_index FROM global_summary_cache c
@@ -216,7 +195,6 @@ function listBySession(sessionId: string): SummaryWithSession[] {
       ORDER BY idx.turn_index ASC
     `).all(sessionId)
   }
-  
   return rows.map(rowToSummaryWithSession)
 }
 
@@ -252,53 +230,31 @@ function getMessagesByRange(startMsgId: string, endMsgId: string): StoredMessage
 
 function getStats() {
   const database = openDb()
-  const cacheRow = database.prepare(`
-    SELECT COUNT(*) as c FROM global_summary_cache
-  `).get() as any
-  const sessionRow = database.prepare(`
-    SELECT COUNT(DISTINCT session_id) as c FROM session_turn_summaries
-  `).get() as any
-  const msgRow = database.prepare(`
-    SELECT COUNT(*) as c FROM turn_messages
-  `).get() as any
+  const cacheRow = database.prepare(`SELECT COUNT(*) as c FROM global_summary_cache`).get() as any
+  const sessionRow = database.prepare(`SELECT COUNT(DISTINCT session_id) as c FROM session_turn_summaries`).get() as any
+  const msgRow = database.prepare(`SELECT COUNT(*) as c FROM turn_messages`).get() as any
   const dbPath = getDbPath()
   const size = existsSync(dbPath) ? statSync(dbPath).size : 0
-  return { 
-    totalSummaries: cacheRow.c, 
-    totalSessions: sessionRow.c,
-    totalMessages: msgRow.c,
-    dbSizeBytes: size 
-  }
+  return { totalSummaries: cacheRow.c, totalSessions: sessionRow.c, totalMessages: msgRow.c, dbSizeBytes: size }
 }
-
-// ─── Recall Logic ─────────────────────────────────────────────────────────────
 
 const recallLLM = createRecallLLMClient()
 
 async function performRecall(options: RecallOptions): Promise<RecallResult> {
   const { query, sessionId, limit = 3 } = options
-
-  // Step 1: Search summaries (fast FTS)
   const summaries = searchSummaries(query, limit, sessionId)
-
   if (summaries.length === 0) {
     return { query, totalFound: 0, recalls: [] }
   }
 
   const recalls: RecallResult["recalls"] = []
-
-  // Step 2: For each matched summary, generate recall
   for (const summary of summaries) {
-    // sessionId from JOIN is always populated for rows returned by searchSummaries
     const effectiveSessionId = summary.sessionId || sessionId
-
-    // Get messages for this turn
     const messages = effectiveSessionId
       ? getMessages(effectiveSessionId, summary.turnIndex)
       : []
 
     if (messages.length === 0) {
-      // Try by msgId range
       if (summary.startMsgId && summary.endMsgId) {
         const rangeMessages = getMessagesByRange(summary.startMsgId, summary.endMsgId)
         if (rangeMessages.length > 0) {
@@ -327,16 +283,13 @@ async function performRecall(options: RecallOptions): Promise<RecallResult> {
       })
     }
   }
-
   return { query, totalFound: recalls.length, recalls }
 }
 
 async function generateRecall(query: string, summary: SummaryWithSession, messages: StoredMessage[]): Promise<string> {
   if (!recallLLM) {
-    // Fallback: return formatted messages without LLM
     return `LLM not available. Raw messages:\n\n${messages.map(m => `[${m.role}] ${m.content.slice(0, 200)}`).join("\n\n")}`
   }
-
   try {
     const prompt = buildRecallPrompt({ query, summary, messages })
     const recall = await recallLLM.generate(prompt)
@@ -347,14 +300,11 @@ async function generateRecall(query: string, summary: SummaryWithSession, messag
   }
 }
 
-// ─── MCP Server ───────────────────────────────────────────────────────────────
-
 const server = new McpServer(
-  { name: "ctx_summary_mcp", version: "0.3.0" },
+  { name: "mcp_ctx_summary", version: "0.3.0" },
   { capabilities: { tools: {} } },
 )
 
-// Tool schemas
 const RecallSchema = z.object({
   query: z.string().describe("Natural language query for recall"),
   sessionId: z.string().optional().describe("Filter by session ID"),
@@ -367,88 +317,36 @@ const SearchSchema = z.object({
   sessionId: z.string().optional().describe("Filter by session ID"),
 })
 
-const ListSchema = z.object({
-  sessionId: z.string().describe("Session ID to list summaries for"),
-})
-
-const GetSchema = z.object({
-  sessionId: z.string().describe("Session ID"),
-  turnIndex: z.number().describe("Turn index"),
-})
-
-const MessagesSchema = z.object({
-  sessionId: z.string().describe("Session ID"),
-  turnIndex: z.number().describe("Turn index"),
-})
+const ListSchema = z.object({ sessionId: z.string().describe("Session ID to list summaries for") })
+const GetSchema = z.object({ sessionId: z.string().describe("Session ID"), turnIndex: z.number().describe("Turn index") })
+const MessagesSchema = z.object({ sessionId: z.string().describe("Session ID"), turnIndex: z.number().describe("Turn index") })
 
 server.server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
     {
       name: "summary_recall",
-      description:
-        "Intent-driven recall that retrieves relevant historical information. " +
-        "Uses LLM to generate context-aware recall based on a natural language query. " +
-        "Best for: answering questions about past work, understanding previous decisions, " +
-        "finding solutions to similar problems, or recalling specific implementation details.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          query: { type: "string", description: "Natural language query for recall" },
-          sessionId: { type: "string", description: "Filter by session ID" },
-          limit: { type: "number", description: "Max results to return", default: 3 },
-        },
-        required: ["query"],
-      },
+      description: "Intent-driven recall that retrieves relevant historical information. Uses LLM to generate context-aware recall based on a natural language query.",
+      inputSchema: { type: "object", properties: { query: { type: "string", description: "Natural language query for recall" }, sessionId: { type: "string", description: "Filter by session ID" }, limit: { type: "number", description: "Max results to return", default: 3 } }, required: ["query"] },
     },
     {
       name: "summary_search",
-      description:
-        "Full-text search across all turn summaries. Searches overview, intent, and outcome fields. " +
-        "Use this for quick lookup when you know what you're looking for.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          query: { type: "string", description: "Search query for full-text search across summaries" },
-          limit: { type: "number", description: "Max results to return", default: 5 },
-          sessionId: { type: "string", description: "Filter by session ID" },
-        },
-        required: ["query"],
-      },
+      description: "Full-text search across all turn summaries.",
+      inputSchema: { type: "object", properties: { query: { type: "string" }, limit: { type: "number", default: 5 }, sessionId: { type: "string" } }, required: ["query"] },
     },
     {
       name: "summary_list",
       description: "List all summaries for a specific session in turn order",
-      inputSchema: {
-        type: "object",
-        properties: {
-          sessionId: { type: "string", description: "Session ID to list summaries for" },
-        },
-        required: ["sessionId"],
-      },
+      inputSchema: { type: "object", properties: { sessionId: { type: "string" } }, required: ["sessionId"] },
     },
     {
       name: "summary_get",
       description: "Get a single turn summary by session ID and turn index",
-      inputSchema: {
-        type: "object",
-        properties: {
-          sessionId: { type: "string", description: "Session ID" },
-          turnIndex: { type: "number", description: "Turn index" },
-        },
-        required: ["sessionId", "turnIndex"],
-      },
+      inputSchema: { type: "object", properties: { sessionId: { type: "string" }, turnIndex: { type: "number" } }, required: ["sessionId", "turnIndex"] },
     },
     {
       name: "summary_messages",
       description: "Get raw messages for a specific turn",
-      inputSchema: {
-        type: "object",
-        properties: {
-          sessionId: { type: "string", description: "Session ID" },
-          turnIndex: { type: "number", description: "Turn index" },
-        },
-        required: ["sessionId", "turnIndex"],
-      },
+      inputSchema: { type: "object", properties: { sessionId: { type: "string" }, turnIndex: { type: "number" } }, required: ["sessionId", "turnIndex"] },
     },
     {
       name: "summary_health",
@@ -460,119 +358,57 @@ server.server.setRequestHandler(ListToolsRequestSchema, async () => ({
 
 server.server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params
-
   try {
     if (name === "summary_recall") {
       const { query, sessionId, limit = 3 } = RecallSchema.parse(args)
       const result = await performRecall({ query, sessionId, limit })
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify(result, null, 2),
-          },
-        ],
-      }
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] }
     }
-
     if (name === "summary_search") {
       const { query, limit = 5, sessionId } = SearchSchema.parse(args)
       const results = searchSummaries(query, limit, sessionId)
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify(
-              { query, count: results.length, results }, null, 2),
-          },
-        ],
-      }
+      return { content: [{ type: "text", text: JSON.stringify({ query, count: results.length, results }, null, 2) }] }
     }
-
     if (name === "summary_list") {
       const { sessionId } = ListSchema.parse(args)
       const results = listBySession(sessionId)
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify(
-              { sessionId, count: results.length, results }, null, 2),
-          },
-        ],
-      }
+      return { content: [{ type: "text", text: JSON.stringify({ sessionId, count: results.length, results }, null, 2) }] }
     }
-
     if (name === "summary_get") {
       const { sessionId, turnIndex } = GetSchema.parse(args)
       const summary = getSummary(sessionId, turnIndex)
-      if (!summary) {
-        return {
-          content: [{ type: "text", text: `Summary not found: session=${sessionId} turn=${turnIndex}` }],
-          isError: true,
-        }
-      }
-      return {
-        content: [{ type: "text", text: JSON.stringify({ summary }, null, 2) }],
-      }
+      if (!summary) return { content: [{ type: "text", text: `Summary not found: session=${sessionId} turn=${turnIndex}` }], isError: true }
+      return { content: [{ type: "text", text: JSON.stringify({ summary }, null, 2) }] }
     }
-
     if (name === "summary_messages") {
       const { sessionId, turnIndex } = MessagesSchema.parse(args)
       const messages = getMessages(sessionId, turnIndex)
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify({ sessionId, turnIndex, count: messages.length, messages }, null, 2),
-          },
-        ],
-      }
+      return { content: [{ type: "text", text: JSON.stringify({ sessionId, turnIndex, count: messages.length, messages }, null, 2) }] }
     }
-
     if (name === "summary_health") {
       try {
         const stats = getStats()
-        return {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify({ status: "ok", ...stats, recallEnabled: !!recallLLM }, null, 2),
-            },
-          ],
-        }
+        return { content: [{ type: "text", text: JSON.stringify({ status: "ok", ...stats, recallEnabled: !!recallLLM }, null, 2) }] }
       } catch (err) {
-        return {
-          content: [{ type: "text", text: `DB not ready: ${err instanceof Error ? err.message : String(err)}` }],
-          isError: true,
-        }
+        return { content: [{ type: "text", text: `DB not ready: ${err instanceof Error ? err.message : String(err)}` }], isError: true }
       }
     }
-
-    return {
-      content: [{ type: "text", text: `Unknown tool: ${name}` }],
-      isError: true,
-    }
+    return { content: [{ type: "text", text: `Unknown tool: ${name}` }], isError: true }
   } catch (err) {
-    return {
-      content: [{ type: "text", text: `Error: ${err instanceof Error ? err.message : String(err)}` }],
-      isError: true,
-    }
+    return { content: [{ type: "text", text: `Error: ${err instanceof Error ? err.message : String(err)}` }], isError: true }
   }
 })
 
-// ─── Entry point ──────────────────────────────────────────────────────────────
-
 async function main() {
-  console.error("[ctx_summary_mcp] Starting...")
-  console.error(`[ctx_summary_mcp] Data dir: ${getDataDir()}`)
-  console.error(`[ctx_summary_mcp] Recall LLM: ${recallLLM ? "enabled" : "disabled (no API key)"}`)
+  console.error("[mcp_ctx_summary] Starting...")
+  console.error(`[mcp_ctx_summary] Data dir: ${getDataDir()}`)
+  console.error(`[mcp_ctx_summary] Recall LLM: ${recallLLM ? "enabled" : "disabled (no API key)"}`)
   const transport = new StdioServerTransport()
   await server.connect(transport)
-  console.error("[ctx_summary_mcp] Connected")
+  console.error("[mcp_ctx_summary] Connected")
 }
 
 main().catch((err) => {
-  console.error("[ctx_summary_mcp] Fatal:", err)
+  console.error("[mcp_ctx_summary] Fatal:", err)
   process.exit(1)
 })

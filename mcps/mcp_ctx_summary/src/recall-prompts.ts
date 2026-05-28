@@ -1,10 +1,6 @@
-// Re-export summary prompts from the canonical package
-// (Recall prompts below are specific to ctx_summary_mcp's recall feature)
-export { SUMMARY_SYSTEM_PROMPT, SUMMARY_USER_PROMPT, MAX_SERIALIZED_SIZE } from "@context-forge/types/prompts"
-
 import type { StoredMessage, TurnSummary } from "./types.js"
 
-// ─── Recall Prompts ─────────────────────────────────────────────────────────
+export { SUMMARY_SYSTEM_PROMPT, SUMMARY_USER_PROMPT, MAX_SERIALIZED_SIZE } from "./prompts.js"
 
 export const RECALL_SYSTEM_PROMPT = `You are a memory recall assistant. Given a conversation turn and a query, recall the most relevant information that answers the user's question.
 
@@ -16,9 +12,6 @@ Focus on:
 
 Be concise but comprehensive. Output directly without any prefix or explanation.`
 
-/**
- * Build the recall prompt for a single turn.
- */
 export function buildRecallPrompt(params: {
   query: string
   summary: TurnSummary
@@ -62,9 +55,6 @@ Recall (output directly to answer the query):
 `
 }
 
-/**
- * Format messages for display/debugging.
- */
 export function formatMessages(messages: StoredMessage[]): string {
   return messages.map((msg, idx) => {
     let line = `[${idx}] ${msg.role.toUpperCase()}: `

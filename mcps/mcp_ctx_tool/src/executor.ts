@@ -1,5 +1,5 @@
 /**
- * PolyglotExecutor - Sandbox code execution for ctx_plugin MCP server.
+ * PolyglotExecutor - Sandbox code execution for mcp_ctx_tool.
  *
  * Executes code in various languages with process isolation,
  * environment sanitization, and output buffering.
@@ -19,9 +19,6 @@ import type { ExecResult } from "./types.js";
 
 const isWin = process.platform === "win32";
 
-/**
- * Script file extensions per language.
- */
 const SCRIPT_EXT: Record<Language, string> = {
   javascript: "js",
   typescript: "ts",
@@ -36,9 +33,6 @@ const SCRIPT_EXT: Record<Language, string> = {
   elixir: "exs",
 };
 
-/**
- * Resolve the real OS temp directory, bypassing any TMPDIR env override.
- */
 const OS_TMPDIR = (() => {
   if (isWin) return process.env.TEMP ?? process.env.TMP ?? tmpdir();
   try {
@@ -53,9 +47,6 @@ const OS_TMPDIR = (() => {
   return "/tmp";
 })();
 
-/**
- * Kill process tree - on Windows uses taskkill, on Unix kills process group.
- */
 function killTree(proc: ReturnType<typeof spawn>): void {
   if (isWin && proc.pid) {
     try {
@@ -86,7 +77,7 @@ export class PolyglotExecutor {
     projectRoot?: string | (() => string);
     runtimes?: RuntimeMap;
   }) {
-    this.#hardCapBytes = opts?.hardCapBytes ?? 100 * 1024 * 1024; // 100MB
+    this.#hardCapBytes = opts?.hardCapBytes ?? 100 * 1024 * 1024;
     const pr = opts?.projectRoot;
     if (typeof pr === "function") {
       this.#projectRootResolver = pr;
@@ -117,18 +108,16 @@ export class PolyglotExecutor {
 
   async execute(opts: ExecuteOptions): Promise<ExecResult> {
     const { language, code, timeout, background = false } = opts;
-    const tmpDir = mkdtempSync(join(OS_TMPDIR, ".ctx-plugin-"));
+    const tmpDir = mkdtempSync(join(OS_TMPDIR, ".mcp-ctx-tool-"));
 
     try {
       const filePath = this.#writeScript(tmpDir, code, language);
       const cmd = buildCommand(this.#runtimes, language, filePath);
 
-      // Rust: compile then run
       if (cmd[0] === "__rust_compile_run__") {
         return await this.#compileAndRun(filePath, tmpDir, timeout);
       }
 
-      // Shell commands run in the project directory, others in temp
       const cwd = language === "shell" ? this.#projectRoot : tmpDir;
       const result = await this.#spawn(cmd, cwd, tmpDir, timeout, background);
 
@@ -148,17 +137,14 @@ export class PolyglotExecutor {
   }
 
   #writeScript(tmpDir: string, code: string, language: Language): string {
-    // Go needs package main wrapper if not present
     if (language === "go" && !code.includes("package ")) {
       code = `package main\n\nimport "fmt"\n\nfunc main() {\n${code}\n}\n`;
     }
 
-    // PHP needs opening tag if not present
     if (language === "php" && !code.trimStart().startsWith("<?")) {
       code = `<?php\n${code}`;
     }
 
-    // Elixir: prepend compiled BEAM paths when inside Mix project
     if (language === "elixir" && existsSync(join(this.#projectRoot, "mix.exs"))) {
       const escaped = JSON.stringify(join(this.#projectRoot, "_build/dev/lib"));
       code = `Path.wildcard(Path.join(${escaped}, "*/ebin"))\n|> Enum.each(&Code.prepend_path/1)\n\n${code}`;
@@ -319,32 +305,19 @@ export class PolyglotExecutor {
   #buildSafeEnv(tmpDir: string): Record<string, string> {
     const realHome = process.env.HOME ?? process.env.USERPROFILE ?? tmpDir;
 
-    // Denylist: env vars that corrupt sandbox or inject code
     const DENIED = new Set([
-      // Shell
       "BASH_ENV", "ENV", "PROMPT_COMMAND", "PS4", "SHELLOPTS", "BASHOPTS",
       "CDPATH", "INPUTRC", "BASH_XTRACEFD",
-      // Node.js
       "NODE_OPTIONS", "NODE_PATH",
-      // Python
       "PYTHONSTARTUP", "PYTHONHOME", "PYTHONBREAKPOINT", "PYTHONINSPECT",
-      // Ruby
       "RUBYOPT", "RUBYLIB",
-      // Perl
       "PERL5OPT", "PERL5LIB", "PERLLIB", "PERL5DB",
-      // Elixir/Erlang
       "ERL_AFLAGS", "ERL_FLAGS", "ELIXIR_ERL_OPTIONS", "ERL_LIBS",
-      // Go
       "GOFLAGS", "CGO_CFLAGS", "CGO_LDFLAGS",
-      // Rust
       "RUSTC", "RUSTC_WRAPPER", "RUSTFLAGS",
-      // Dynamic linker
       "LD_PRELOAD", "DYLD_INSERT_LIBRARIES",
-      // OpenSSL
       "OPENSSL_CONF", "OPENSSL_ENGINES",
-      // Compiler
       "CC", "CXX", "AR",
-      // Git
       "GIT_TEMPLATE_DIR", "GIT_CONFIG_GLOBAL", "GIT_EXEC_PATH", "GIT_SSH",
     ]);
 
@@ -355,7 +328,6 @@ export class PolyglotExecutor {
       }
     }
 
-    // Sandbox overrides
     env["TMPDIR"] = tmpDir;
     env["HOME"] = realHome;
     env["LANG"] = "en_US.UTF-8";
@@ -372,7 +344,6 @@ export class PolyglotExecutor {
       env["PATH"] = isWin ? "" : "/usr/local/bin:/usr/bin:/bin";
     }
 
-    // Windows fixes
     if (isWin) {
       env["MSYS_NO_PATHCONV"] = "1";
       env["MSYS2_ARG_CONV_EXCL"] = "*";
@@ -383,7 +354,6 @@ export class PolyglotExecutor {
       }
     }
 
-    // SSL certificate
     if (!env["SSL_CERT_FILE"]) {
       const certPaths = isWin ? [] : [
         "/etc/ssl/cert.pem",
@@ -401,10 +371,6 @@ export class PolyglotExecutor {
     return env;
   }
 
-  /**
-   * Execute a script file by path.
-   * Detects language from shebang or file extension.
-   */
   async executeFile(opts: {
     path: string;
     args?: string[];
@@ -422,7 +388,6 @@ export class PolyglotExecutor {
       };
     }
 
-    // Detect language from shebang
     const rawContent = readFileSync(filePath, { encoding: "utf-8", flag: "r" });
     const shebang = rawContent.split("\n")[0];
     let language: Language = "shell";
@@ -438,7 +403,6 @@ export class PolyglotExecutor {
       else if (/r\b|Rscript/.test(shebang)) language = "r";
     }
 
-    // Fallback: detect from extension
     if (language === "shell") {
       const ext = filePath.split(".").pop()?.toLowerCase();
       const extMap: Record<string, Language> = {
@@ -457,13 +421,12 @@ export class PolyglotExecutor {
       if (ext && extMap[ext]) language = extMap[ext];
     }
 
-    // Build command with arguments
     const cmd = buildCommand(this.#runtimes, language, filePath);
     if (cmd[0] !== "__rust_compile_run__" && args.length > 0) {
       cmd.push(...args);
     }
 
-    const tmpDir = mkdtempSync(join(OS_TMPDIR, ".ctx-plugin-file-"));
+    const tmpDir = mkdtempSync(join(OS_TMPDIR, ".mcp-ctx-tool-file-"));
     const mergedEnv = { ...this.#buildSafeEnv(tmpDir), ...env };
 
     try {
@@ -544,9 +507,6 @@ export class PolyglotExecutor {
     }
   }
 
-  /**
-   * Execute multiple code blocks in batch.
-   */
   async batchExecute(opts: {
     commands: Array<{ language: Language; code: string }>;
     sequential?: boolean;

@@ -1,5 +1,5 @@
 /**
- * CLI for registering ctx_summary_mcp in opencode.json MCP config.
+ * CLI for registering mcp_ctx_summary in opencode.json MCP config.
  *
  * Usage:
  *   node dist/install.js       (register)
@@ -53,7 +53,7 @@ function saveOpencodeConfig(config: OpencodeConfig): void {
   ensureConfigDir()
   const configPath = getOpencodeConfigPath()
   writeFileSync(configPath, JSON.stringify(config, null, 2))
-  console.log(`[ctx_summary_mcp] Updated ${configPath}`)
+  console.log(`[mcp_ctx_summary] Updated ${configPath}`)
 }
 
 function getServerPath(): string {
@@ -64,23 +64,23 @@ function install(): void {
   const config = loadOpencodeConfig()
   if (!config.mcp) config.mcp = {}
 
-  config.mcp["ctx_summary_mcp"] = {
+  config.mcp["mcp_ctx_summary"] = {
     type: "local",
     command: ["node", getServerPath()],
   }
 
   saveOpencodeConfig(config)
-  console.log("[ctx_summary_mcp] Installed successfully")
+  console.log("[mcp_ctx_summary] Installed successfully")
   console.log("Restart opencode to pick up the new MCP server.")
 }
 
 function uninstall(): void {
   const config = loadOpencodeConfig()
-  if (config.mcp?.["ctx_summary_mcp"]) {
-    delete config.mcp["ctx_summary_mcp"]
+  if (config.mcp?.["mcp_ctx_summary"]) {
+    delete config.mcp["mcp_ctx_summary"]
   }
   saveOpencodeConfig(config)
-  console.log("[ctx_summary_mcp] Uninstalled successfully")
+  console.log("[mcp_ctx_summary] Uninstalled successfully")
 }
 
 const args = process.argv.slice(2)

@@ -1,5 +1,5 @@
 /**
- * ContentStore - FTS5 BM25-based knowledge base for ctx_plugin.
+ * ContentStore - FTS5 BM25-based knowledge base for mcp_ctx_tool.
  *
  * Chunks content by headings (keeping code blocks intact),
  * stores in SQLite FTS5, and retrieves via BM25-ranked search.
@@ -8,11 +8,7 @@
 import { Database } from "./db-base.js";
 import { createHash } from "node:crypto";
 import { readFileSync, existsSync, statSync, mkdirSync } from "node:fs";
-import { join, dirname } from "node:path";
-
-// ─────────────────────────────────────────────────────────
-// Types
-// ─────────────────────────────────────────────────────────
+import { join } from "node:path";
 
 export interface SearchResult {
   title: string;
@@ -44,10 +40,6 @@ interface Chunk {
   hasCode: boolean;
 }
 
-// ─────────────────────────────────────────────────────────
-// Constants
-// ─────────────────────────────────────────────────────────
-
 const STOPWORDS = new Set([
   "the", "and", "for", "are", "but", "not", "you", "all", "can", "had",
   "her", "was", "one", "our", "out", "has", "his", "how", "its", "may",
@@ -58,10 +50,6 @@ const STOPWORDS = new Set([
   "could", "would", "about", "which", "their", "there", "other", "after",
   "update", "updates", "updated", "add", "added", "fix", "fixed",
 ]);
-
-// ─────────────────────────────────────────────────────────
-// Helpers
-// ─────────────────────────────────────────────────────────
 
 function dedupeTokens(tokens: string[]): string[] {
   const seen = new Set<string>();
@@ -95,7 +83,6 @@ function hashContent(content: string): string {
 function detectContentType(content: string): "code" | "prose" {
   const codeBlocks = (content.match(/```[\s\S]*?```/g) || []).length;
   const lines = content.split("\n");
-  const codeLines = lines.filter((l) => l.trim().startsWith("```")).length;
   const linesWithCode = lines.filter(
     (l) => /^(import|export|const|let|var|function|class|def|public|private|if|for|while)\s/.test(l.trim())
   ).length;
@@ -109,7 +96,6 @@ function splitIntoChunks(content: string, maxChunkSize = 4096): Chunk[] {
   let currentChunk = "";
   let currentTitle = "Untitled";
 
-  // Try to detect title from first heading
   for (const line of lines) {
     const headingMatch = line.match(/^(#{1,4})\s+(.+)$/);
     if (headingMatch) {
@@ -124,7 +110,6 @@ function splitIntoChunks(content: string, maxChunkSize = 4096): Chunk[] {
     const line = lines[i];
     const headingMatch = line.match(/^(#{1,4})\s+(.+)$/);
 
-    // Start new chunk on heading or if current chunk exceeds max size
     if (
       headingMatch ||
       currentChunk.length + line.length > maxChunkSize
@@ -146,7 +131,6 @@ function splitIntoChunks(content: string, maxChunkSize = 4096): Chunk[] {
     }
   }
 
-  // Push remaining chunk
   if (currentChunk.trim()) {
     chunks.push({
       title: currentTitle,
@@ -158,17 +142,12 @@ function splitIntoChunks(content: string, maxChunkSize = 4096): Chunk[] {
   return chunks;
 }
 
-// ─────────────────────────────────────────────────────────
-// ContentStore
-// ─────────────────────────────────────────────────────────
-
 export class ContentStore {
   #db: Database;
   #dbPath: string;
 
   constructor(projectDir: string) {
-    // Create directory if it doesn't exist
-    const dbDir = join(projectDir, ".ctx_plugin");
+    const dbDir = join(projectDir, ".mcp_ctx_tool");
     if (!existsSync(dbDir)) {
       mkdirSync(dbDir, { recursive: true });
     }
@@ -178,7 +157,6 @@ export class ContentStore {
   }
 
   #init(): void {
-    // Create FTS5 virtual table with porter stemming and trigram
     this.#db.exec(`
       CREATE VIRTUAL TABLE IF NOT EXISTS chunks USING fts5(
         title,
@@ -203,7 +181,6 @@ export class ContentStore {
       );
     `);
 
-    // Create sources table
     this.#db.exec(`
       CREATE TABLE IF NOT EXISTS sources (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -216,7 +193,6 @@ export class ContentStore {
       );
     `);
 
-    // Create index on source_label (only on regular tables)
     this.#db.exec(`
       CREATE INDEX IF NOT EXISTS idx_sources_label ON sources(label);
     `);
@@ -229,7 +205,6 @@ export class ContentStore {
     const now = new Date().toISOString();
 
     return this.#db.transaction(() => {
-      // Check if source with same hash exists
       const existing = this.#db.prepare(
         "SELECT id FROM sources WHERE label = ? AND content_hash = ?"
       ).get(label, contentHash);
@@ -243,7 +218,6 @@ export class ContentStore {
         };
       }
 
-      // Insert new source
       const insertSource = this.#db.prepare(
         "INSERT INTO sources (label, content_hash, chunk_count, code_chunk_count, indexed_at) VALUES (?, ?, ?, ?, ?)"
       );
@@ -256,7 +230,6 @@ export class ContentStore {
       );
       const sourceId = Number(sourceResult.lastInsertRowid);
 
-      // Insert chunks into both FTS tables
       const insertChunk = this.#db.prepare(
         "INSERT INTO chunks (title, content, source_id, content_type, source_label, chunk_hash) VALUES (?, ?, ?, ?, ?, ?)"
       );
@@ -303,7 +276,6 @@ export class ContentStore {
     const { source, contentType } = opts ?? {};
 
     try {
-      // BM25 search with RRF fusion of porter + trigram
       const sql = `
         WITH porter_results AS (
           SELECT title, content, source_label, content_type,
@@ -356,7 +328,6 @@ export class ContentStore {
         matchLayer: row.trigram_rank ? "rrf" : "porter",
       }));
     } catch {
-      // Fallback to simple LIKE search if FTS fails
       return this.#fallbackSearch(query, limit, opts);
     }
   }

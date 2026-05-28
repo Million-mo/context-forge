@@ -1,5 +1,5 @@
 /**
- * Database base for ctx_plugin MCP server.
+ * Database base for mcp_ctx_tool.
  *
  * Provides SQLite infrastructure using Node.js built-in sqlite module.
  */
@@ -28,10 +28,9 @@ export class Database {
   }
 
   #init(): void {
-    // Enable WAL mode for better concurrent access
     this.#db.exec("PRAGMA journal_mode=WAL");
     this.#db.exec("PRAGMA synchronous=NORMAL");
-    this.#db.exec("PRAGMA cache_size=-64000"); // 64MB cache
+    this.#db.exec("PRAGMA cache_size=-64000");
     this.#db.exec("PRAGMA temp_store=MEMORY");
   }
 
@@ -55,7 +54,6 @@ export class Database {
   }
 
   transaction<T>(fn: () => T): T {
-    // Use exec with BEGIN/COMMIT for transaction
     this.#db.exec("BEGIN TRANSACTION");
     try {
       const result = fn();
@@ -76,16 +74,10 @@ export class Database {
   }
 }
 
-/**
- * Open or create a database at the given path.
- */
 export function openDatabase(path: string): Database {
   return new Database(path);
 }
 
-/**
- * Close a database connection.
- */
 export function closeDatabase(db: Database): void {
   db.close();
 }

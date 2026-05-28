@@ -27,7 +27,7 @@ export class RecallLLMClient {
     const url = `${this.config.baseUrl}/v1/chat/completions`
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), 60_000)
-    
+
     let res: Response
     try {
       res = await fetch(url, {
@@ -52,16 +52,11 @@ export class RecallLLMClient {
 
     const data = await res.json() as any
     const content = data.choices?.[0]?.message?.content || data.choices?.[0]?.message?.reasoning || ""
-    return {
-      content: content,
-      usage: data.usage,
-    }
+    return { content, usage: data.usage }
   }
 
   async generate(prompt: string): Promise<string> {
-    const messages = [
-      { role: "user", content: prompt }
-    ]
+    const messages = [{ role: "user", content: prompt }]
 
     if (this.config.provider === "anthropic") {
       throw new Error("Anthropic not implemented for recall")
@@ -72,12 +67,9 @@ export class RecallLLMClient {
   }
 }
 
-// ─── Factory ─────────────────────────────────────────────────────────────────
-
 export function createRecallLLMClient(): RecallLLMClient | null {
   const { llm } = config
 
-  // Local/self-hosted LLM doesn't require API key; only anthropic always needs one
   if (!llm.apiKey && llm.provider === "anthropic") {
     console.warn("[recall-llm] No apiKey set for anthropic — recall generation disabled")
     return null

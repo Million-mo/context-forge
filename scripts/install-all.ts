@@ -6,8 +6,8 @@
  *   npx tsx scripts/install-all.ts --uninstall  (remove all)
  *
  * Runs:
- *   1. ctx_plugin install mcp  (ctx_plugin's own CLI)
- *   2. services/ctx_summary_mcp/dist/install.js  (installs ctx_summary_mcp into opencode.json)
+ *   1. mcp_ctx_tool dist/install.js  (registers mcp_ctx_tool into opencode.json)
+ *   2. mcp_ctx_summary dist/install.js  (registers mcp_ctx_summary into opencode.json)
  */
 
 import { existsSync } from "fs"
@@ -35,21 +35,20 @@ function run(cmd: string, cwd: string, label: string): void {
 function install(): void {
   console.log("=== Installing all MCP servers ===\n")
 
-  // 1. ctx_plugin MCP
-  const ctxPluginPkg = resolve(ROOT, "ctx_plugin", "package.json")
-  if (existsSync(ctxPluginPkg)) {
-    // ctx_plugin CLI is at dist/cli.js, or can be run via npx from ctx_plugin dir
-    run("ctx_plugin install mcp", resolve(ROOT, "ctx_plugin"), "ctx_plugin MCP")
+  // 1. mcp_ctx_tool install
+  const ctxToolInstallScript = resolve(ROOT, "mcps", "mcp_ctx_tool", "dist", "install.js")
+  if (existsSync(ctxToolInstallScript)) {
+    run(`node "${ctxToolInstallScript}"`, resolve(ROOT, "mcps", "mcp_ctx_tool"), "mcp_ctx_tool MCP")
   } else {
-    console.warn("  ! ctx_plugin not found, skipping")
+    console.warn("  ! mcp_ctx_tool install script not found, skipping (build it first: cd mcps/mcp_ctx_tool && npm run build)")
   }
 
-  // 2. ctx_summary_mcp install
-  const summaryInstallScript = resolve(ROOT, "services", "ctx_summary_mcp", "dist", "install.js")
-  if (existsSync(summaryInstallScript)) {
-    run(`node "${summaryInstallScript}"`, resolve(ROOT, "services", "ctx_summary_mcp"), "ctx_summary_mcp MCP")
+  // 2. mcp_ctx_summary install
+  const ctxSummaryInstallScript = resolve(ROOT, "mcps", "mcp_ctx_summary", "dist", "install.js")
+  if (existsSync(ctxSummaryInstallScript)) {
+    run(`node "${ctxSummaryInstallScript}"`, resolve(ROOT, "mcps", "mcp_ctx_summary"), "mcp_ctx_summary MCP")
   } else {
-    console.warn("  ! ctx_summary_mcp install script not found, skipping (build it first: cd services/ctx_summary_mcp && npm run build)")
+    console.warn("  ! mcp_ctx_summary install script not found, skipping (build it first: cd mcps/mcp_ctx_summary && npm run build)")
   }
 
   console.log("\n=== All done ===")
@@ -59,14 +58,14 @@ function install(): void {
 function uninstall(): void {
   console.log("=== Uninstalling all MCP servers ===\n")
 
-  const ctxPluginPkg = resolve(ROOT, "ctx_plugin", "package.json")
-  if (existsSync(ctxPluginPkg)) {
-    run("ctx_plugin uninstall mcp", resolve(ROOT, "ctx_plugin"), "ctx_plugin MCP")
+  const ctxToolInstallScript = resolve(ROOT, "mcps", "mcp_ctx_tool", "dist", "install.js")
+  if (existsSync(ctxToolInstallScript)) {
+    run(`node "${ctxToolInstallScript}" --uninstall`, resolve(ROOT, "mcps", "mcp_ctx_tool"), "mcp_ctx_tool MCP")
   }
 
-  const summaryInstallScript = resolve(ROOT, "services", "ctx_summary_mcp", "dist", "install.js")
-  if (existsSync(summaryInstallScript)) {
-    run(`node "${summaryInstallScript}" --uninstall`, resolve(ROOT, "services", "ctx_summary_mcp"), "ctx_summary_mcp MCP")
+  const ctxSummaryInstallScript = resolve(ROOT, "mcps", "mcp_ctx_summary", "dist", "install.js")
+  if (existsSync(ctxSummaryInstallScript)) {
+    run(`node "${ctxSummaryInstallScript}" --uninstall`, resolve(ROOT, "mcps", "mcp_ctx_summary"), "mcp_ctx_summary MCP")
   }
 
   console.log("\n=== All removed ===")

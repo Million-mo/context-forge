@@ -1,7 +1,7 @@
 /**
- * ctx_plugin MCP module
+ * mcp_ctx_tool module
  *
- * Re-exports all MCP components for easy importing.
+ * Re-exports all components for easy importing.
  */
 
 export { PolyglotExecutor } from "./executor.js";

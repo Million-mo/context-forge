@@ -4,7 +4,7 @@
   "private": true,
   "description": "Context management for AI coding agents",
   "workspaces": [
-    "packages/types"
+    "mcps/*"
   ],
   "overrides": {
     "zod": "^3.25.0",
@@ -14,8 +14,9 @@
   "scripts": {
     "install:all": "tsx scripts/install-all.ts",
     "install:all:uninstall": "tsx scripts/install-all.ts --uninstall",
-    "build:types": "npm run build --workspace=@context-forge/types",
-    "build:summary-mcp": "npm run build --workspace=ctx_summary_mcp",
-    "typecheck": "npm run typecheck --workspace=@context-forge/types"
+    "build:shared-types": "npm run build --workspace=@context-forge/shared-types",
+    "build:ctx-tool": "npm run build --workspace=@context-forge/mcp-ctx-tool",
+    "build:ctx-summary": "npm run build --workspace=@context-forge/mcp-ctx-summary",
+    "typecheck": "npm run typecheck --workspace=@context-forge/shared-types"
   }
 }

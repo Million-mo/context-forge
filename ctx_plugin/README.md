@@ -1,43 +1,21 @@
 # ctx_plugin
 
-Unified opencode plugin that merges three capabilities into one cohesive system:
+Unified opencode plugin that merges two capabilities:
 
 - **RTK** — intercepts `bash`/`shell` tool calls and rewrites commands via `rtk rewrite`
 - **Caveman** — ultra-compressed communication mode with session-level persistence
-- **MCP Server** — sandboxed polyglot code execution + FTS5 full-text search
 
 Source of truth lives in `src/plugin.ts`. A mirror is deployed to `.opencode/plugins/caveman.mjs` for runtime.
+
+> **Note:** MCP servers have moved to `mcps/`. See `mcps/mcp_ctx_tool` (code execution + search) and `mcps/mcp_ctx_summary` (context summary + recall).
 
 ---
 
 ## Components
 
-### MCP Server
-
-Full [Model Context Protocol](https://modelcontextprotocol.io) server providing 10 tools:
-
-| Tool | Description |
-|------|-------------|
-| `ctx_ping` | Health check |
-| `ctx_execute` | Execute code in sandbox (11 languages, 100MB output cap) |
-| `ctx_runtimes` | List available language runtimes |
-| `ctx_index` | Index file or content into FTS5 store |
-| `ctx_search` | BM25 + trigram RRF fusion search |
-| `ctx_stats` | Content store statistics |
-| `ctx_execute_file` | Execute a script file with sandboxed environment |
-| `ctx_batch_execute` | Sequential or parallel batch execution |
-| `ctx_fetch_and_index` | Fetch web content and index it |
-| `ctx_purge` | Purge session data from SQLite store |
-
-**Supported languages:** `javascript`, `typescript`, `python`, `shell`, `ruby`, `go`, `rust`, `php`, `perl`, `r`, `elixir`
-
-TypeScript detection prefers `deno`; falls back to `npx tsx`. Python detection prefers `python3`.
-
-The server runs as a stdio MCP server. Configuration is injected into `opencode.json` via `ctx_plugin install mcp`.
-
 ### RTK Integration
 
-When `rtk` is available in PATH, the plugin intercepts `bash`/`shell` tool calls and passes commands through `rtk rewrite` before execution. This provides smarter command rewriting without changing agent behavior.
+When `rtk` is available in PATH, the plugin intercepts `bash`/`shell` tool calls and passes commands through `rtk rewrite` before execution.
 
 ### Caveman Mode
 
@@ -65,63 +43,35 @@ The plugin enforces a layered security model:
 2. **Allow patterns** — structural read-only commands (git status, ls, cat, npm ls, etc.)
 3. **Ask** — anything not matched above, defaults to asking the user
 
-Policy is loaded from `~/.config/opencode/settings.json` (or project-local `.opencode/settings.json`). Set `CTX_PLUGIN_REQUIRE_SECURITY=1` to fail-closed (deny on any policy match instead of ask).
-
-Shell-escape calls are also scanned in non-shell code (`os.system`, `subprocess.run`, `exec()`, `system()`, `Command::new`, etc.) and blocked if they match deny patterns.
-
-### Session DB
-
-SQLite-backed event store for tool call history, session metadata, and persistent tool counters. Stored in `~/.local/share/ctx_plugin/sessions/` (configurable via `CTX_PLUGIN_DATA_DIR`).
+Policy is loaded from `~/.config/opencode/settings.json`. Set `CTX_PLUGIN_REQUIRE_SECURITY=1` to fail-closed.
 
 ---
 
 ## Installation
 
 ```bash
-# Build first
-npm run build
+# Build
+cd ctx_plugin && npm install && npm run build
 
-# Install all components
-ctx_plugin install all
-
-# Or install pieces individually
-ctx_plugin install mcp       # MCP server only
-ctx_plugin install plugin    # Plugin (RTK + Caveman) only
+# Install plugin
+ctx_plugin install plugin
 ```
-
-Restart opencode after installation.
 
 ---
 
 ## CLI Commands
 
 ```bash
-ctx_plugin install [mcp|plugin|all]   Install components
-ctx_plugin uninstall [mcp|plugin|all]  Uninstall components
-ctx_plugin status                       Show installation status
-ctx_plugin doctor                       Run diagnostics
-ctx_plugin security                     Show active security policies
-ctx_plugin purge [--days=N]             Purge old sessions
-ctx_plugin purge --session=<id>         Delete specific session
-ctx_plugin purge --dry-run              Preview purge without executing
+ctx_plugin install [plugin]   Install plugin
+ctx_plugin uninstall [plugin]  Uninstall plugin
+ctx_plugin status              Show installation status
+ctx_plugin doctor              Run diagnostics
+ctx_plugin security            Show active security policies
 ```
 
 ---
 
 ## Configuration
-
-### opencode.json (MCP server)
-
-```json
-{
-  "mcp": {
-    "ctx_plugin": {
-      "type": "local",
-      "command": ["node", "/absolute/path/to/dist/mcp/server.js"]
-    }
-  }
-}
-```
 
 ### settings.json (Security policy)
 
@@ -140,11 +90,9 @@ ctx_plugin purge --dry-run              Preview purge without executing
 | Variable | Purpose |
 |----------|---------|
 | `CTX_PLUGIN_REQUIRE_SECURITY` | `1` = fail-closed on policy match |
-| `CTX_PLUGIN_DATA_DIR` | Override session DB base directory |
 | `CTX_PLUGIN_VERBOSE` | `1` = emit debug logs to stderr |
 | `CAVEMAN_DEFAULT_MODE` | Default caveman level (e.g. `full`) |
 | `OPENCODE_CONFIG_DIR` | Override opencode config directory |
-| `RTK_AVAILABLE` | (RTK runtime) Enable command rewriting |
 
 ### Caveman config
 
@@ -166,15 +114,6 @@ ctx_plugin/
 │   ├── plugin.ts          # opencode plugin (RTK + Caveman hooks)
 │   ├── cli.ts             # install/uninstall/status CLI
 │   ├── security.ts        # Policy engine + shell-escape scanner
-│   ├── session-db.ts      # SQLite event store
-│   ├── rtk.ts             # RTK rewrite integration
-│   ├── mcp/
-│   │   ├── server.ts      # MCP server entry point
-│   │   ├── executor.ts    # PolyglotExecutor (sandbox code execution)
-│   │   ├── runtime.ts     # Runtime detection (Node, Python, Go, etc.)
-│   │   ├── store.ts       # ContentStore (FTS5 BM25 + trigram RRF)
-│   │   ├── db-base.ts     # SQLite base (better-sqlite3 wrapper)
-│   │   └── types.ts       # Shared type definitions
 │   └── hooks/
 │       ├── routing.ts     # Tool routing decisions
 │       ├── guidance.ts    # Per-session one-shot guidance throttle
@@ -183,10 +122,10 @@ ctx_plugin/
 └── skills/
     ├── caveman/           # SKILL.md for each caveman intensity level
     ├── cavecrew/          # Multi-agent coordination
-    ├── caveman-commit/    # Commit message generation
-    ├── caveman-review/    # Code review
-    ├── caveman-compress/  # Text compression
-    └── caveman-help/      # Help/guidance skill
+    ├── caveman-commit/
+    ├── caveman-review/
+    ├── caveman-compress/
+    └── caveman-help/
 ```
 
 ---
@@ -199,8 +138,7 @@ ctx_plugin/
 - Improved BM25 + trigram RRF fusion search
 - Added Rust compilation-and-run support
 - Session DB with tool-call statistics and event logging
-- Per-session guidance throttle (hybrid in-memory + atomic file)
-- Comprehensive security policy engine with shell-escape detection
+- Per-session guidance throttle
 
 ### v0.1.0
 - Initial MCP server with code execution and FTS5 search

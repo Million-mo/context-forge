@@ -5,19 +5,11 @@
   "bin": {
     "ctx_plugin": "./dist/cli.js"
   },
-  "exports": {
-    ".": "./src/index.ts",
-    "./rtk": "./src/rtk.ts",
-    "./mcp": "./src/mcp/server.ts"
-  },
   "scripts": {
     "build": "tsc",
-    "typecheck": "tsc --noEmit",
-    "preinstall": "npm run build",
-    "postinstall": "node ./dist/cli.js install"
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.0.0",
     "@opencode-ai/plugin": "latest",
     "zod": "^3.25.0"
   },

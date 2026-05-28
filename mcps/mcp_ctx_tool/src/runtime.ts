@@ -1,15 +1,13 @@
 /**
- * Runtime detection for ctx_plugin MCP server.
+ * Runtime detection for mcp_ctx_tool.
  *
- * Detects available language runtimes (Node.js, Python, Ruby, etc.)
- * and builds commands to execute code in each language.
+ * Detects available language runtimes and builds commands to execute code.
  */
 
 import { execFileSync, execSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import type { Language, RuntimeMap, RuntimeInfo } from "./types.js";
 
-// Re-export types for external use
 export type { Language, RuntimeMap, RuntimeInfo } from "./types.js";
 
 const isWindows = process.platform === "win32";
@@ -149,53 +147,22 @@ function pythonCommand(): string {
   return "python3";
 }
 
-function hasGo(): boolean {
-  return runnableExists("go");
-}
+function hasGo(): boolean { return runnableExists("go"); }
+function hasRust(): boolean { return runnableExists("rustc"); }
+function hasRuby(): boolean { return runnableExists("ruby"); }
+function hasPHP(): boolean { return runnableExists("php"); }
+function hasPerl(): boolean { return runnableExists("perl"); }
+function hasR(): boolean { return runnableExists("R"); }
+function hasElixir(): boolean { return runnableExists("elixir"); }
 
-function hasRust(): boolean {
-  return runnableExists("rustc");
-}
-
-function hasRuby(): boolean {
-  return runnableExists("ruby");
-}
-
-function hasPHP(): boolean {
-  return runnableExists("php");
-}
-
-function hasPerl(): boolean {
-  return runnableExists("perl");
-}
-
-function hasR(): boolean {
-  return runnableExists("R");
-}
-
-function hasElixir(): boolean {
-  return runnableExists("elixir");
-}
-
-function hasBash(): boolean {
-  return commandExists("bash");
-}
-
-function hasZsh(): boolean {
-  return commandExists("zsh");
-}
-
-function hasDash(): boolean {
-  return commandExists("dash");
-}
+function hasBash(): boolean { return commandExists("bash"); }
+function hasZsh(): boolean { return commandExists("zsh"); }
+function hasDash(): boolean { return commandExists("dash"); }
 
 function hasPwsh(): boolean {
   return runnableExists("pwsh") || runnableExists("powershell");
 }
 
-/**
- * Detect all available language runtimes.
- */
 export function detectRuntimes(): RuntimeMap {
   return {
     javascript: nodeCommand(),
@@ -224,9 +191,6 @@ function detectShell(): string {
   return "sh";
 }
 
-/**
- * Get available languages from runtime map.
- */
 export function getAvailableLanguages(runtimes: RuntimeMap): Language[] {
   const languages: Language[] = ["javascript", "shell"];
   if (runtimes.typescript) languages.push("typescript");
@@ -241,9 +205,6 @@ export function getAvailableLanguages(runtimes: RuntimeMap): Language[] {
   return languages;
 }
 
-/**
- * Get runtime info for a specific language.
- */
 export function getRuntimeInfo(runtimes: RuntimeMap, language: Language): RuntimeInfo {
   const command = runtimes[language];
   return {
@@ -254,9 +215,6 @@ export function getRuntimeInfo(runtimes: RuntimeMap, language: Language): Runtim
   };
 }
 
-/**
- * Get a summary of all runtimes.
- */
 export function getRuntimeSummary(runtimes: RuntimeMap): string {
   const lines: string[] = [];
   for (const [lang, cmd] of Object.entries(runtimes)) {
@@ -267,16 +225,10 @@ export function getRuntimeSummary(runtimes: RuntimeMap): string {
   return lines.length > 0 ? lines.join("\n") : "  No runtimes detected";
 }
 
-/**
- * Check if bun runtime is available.
- */
 export function hasBunRuntime(): boolean {
   return bunExists();
 }
 
-/**
- * Build command to execute a script file with the appropriate runtime.
- */
 export function buildCommand(runtimes: RuntimeMap, language: Language, filePath: string): string[] {
   switch (language) {
     case "javascript":
