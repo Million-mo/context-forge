@@ -92,8 +92,9 @@ function stripTypes(code) {
   // Remove const assertions
   result = result.replace(/\bas\s+const\b/g, "")
 
-  // Remove non-null assertions (exclude != and !==)
-  result = result.replace(/!(?!=)\s*(?=[=,)\];}])/g, "")
+  // NOTE: Non-null assertions (`x!.foo`, `x!`) are already stripped by tsc.
+  // Do NOT run a regex here — it will corrupt `!==` / `!=` operators.
+  // If a non-null assertion survives tsc (shouldn't happen), it's harmless in JS.
 
   // Remove generic parameters from function calls
   result = result.replace(/<(?!\s*)(?![A-Z][a-z])[^>{}]+>(?=\s*[\(])/g, "")

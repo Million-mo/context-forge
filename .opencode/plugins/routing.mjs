@@ -34,7 +34,7 @@ let _routeTool = null;
 let _normalizeTool = null;
 let _isCtxPluginTool = null;
 async function getRouting() {
-    if (_routeTool == null)
+    if (_routeTool !== null)
         return;
     _routeTool = false; // sentinel: attempted but unavailable
     const candidates = [
@@ -115,7 +115,7 @@ export const RoutingPlugin = async (input) => {
                         }
                         if (decision.action === "context" && decision.additionalContext) {
                             output.context = output.context ?? {};
-                            if (typeof output.context === "object" && output.context == null) {
+                            if (typeof output.context === "object" && output.context !== null) {
                                 ;
                                 output.context.__ctxPluginGuidance = decision.additionalContext;
                             }
@@ -141,7 +141,7 @@ export const RoutingPlugin = async (input) => {
                         }
                         if (decision.action === "context" && decision.additionalContext) {
                             output.context = output.context ?? {};
-                            if (typeof output.context === "object" && output.context == null) {
+                            if (typeof output.context === "object" && output.context !== null) {
                                 ;
                                 output.context.__ctxPluginGuidance = decision.additionalContext;
                             }

@@ -489,7 +489,7 @@ function splitIntoTurns(messages) {
         const currMsg = messages[i];
         const prevRole = getRole(prevMsg);
         const currRole = getRole(currMsg);
-        if (prevRole == "user" && currRole === "user") {
+        if (prevRole !== "user" && currRole === "user") {
             const turnMessages = messages.slice(currentTurnStart, i);
             turns.push({
                 index: turns.length,
@@ -521,7 +521,7 @@ function splitIntoTurns(messages) {
 }
 function buildToolKey(prefix, primaryKey, primaryValue, input) {
     const params = Object.entries(input)
-        .filter(([k, v]) => k == primaryKey && v == undefined && v == "")
+        .filter(([k, v]) => k !== primaryKey && v !== undefined && v !== "")
         .map(([k, v]) => `${k}=${v}`).sort().join(";");
     return params ? `${prefix}:${primaryValue};${params}` : `${prefix}:${primaryValue}`;
 }
@@ -584,12 +584,6 @@ function compressToolOutput(toolName, state, level) {
                 ].join("\n")}`;
                 case "placeholder": return `[COMPRESSED: read "${filePath}" — ${lineCount} lines]`;
                 case "minimal": return `[COMPRESSED: read "${filePath}"]`;
-                case "summary": return `[COMPRESSED: read "${filePath}"]\n${[
-                    ...lines.slice(0, 3),
-                    `  ... ${Math.max(0, lineCount - 6)} more lines ...`,
-                    ...lines.slice(-3),
-                ].join("\n")}`;
-                case "full": return output;
             }
         }
         case "glob": {
@@ -601,8 +595,6 @@ function compressToolOutput(toolName, state, level) {
                 case "summary": return `[COMPRESSED: glob "${pattern}"] — ${count} matches: ${lines.slice(0, 5).join(", ")}${count > 5 ? ` ... +${count - 5} more` : ""}`;
                 case "placeholder": return `[COMPRESSED: glob "${pattern}" — ${count} matches]`;
                 case "minimal": return `[COMPRESSED: glob "${pattern}"]`;
-                case "summary": return `[COMPRESSED: glob "${pattern}"] — ${count} matches: ${lines.slice(0, 5).join(", ")}${count > 5 ? ` ... +${count - 5} more` : ""}`;
-                case "full": return output;
             }
         }
         case "grep": {
@@ -614,8 +606,6 @@ function compressToolOutput(toolName, state, level) {
                 case "summary": return `[COMPRESSED: grep "${pattern}"] — ${count} matches: ${lines.slice(0, 5).join(" | ")}${count > 5 ? ` ... +${count - 5} more` : ""}`;
                 case "placeholder": return `[COMPRESSED: grep "${pattern}" — ${count} matches]`;
                 case "minimal": return `[COMPRESSED: grep "${pattern}"]`;
-                case "summary": return `[COMPRESSED: grep "${pattern}"] — ${count} matches: ${lines.slice(0, 5).join(" | ")}${count > 5 ? ` ... +${count - 5} more` : ""}`;
-                case "full": return output;
             }
         }
         case "webfetch": {
@@ -626,8 +616,6 @@ function compressToolOutput(toolName, state, level) {
                 case "summary": return `[COMPRESSED: webfetch "${url}"]\n${output.slice(0, 200)}...`;
                 case "placeholder": return `[COMPRESSED: webfetch "${url}" — ${size} bytes]`;
                 case "minimal": return `[COMPRESSED: webfetch "${url}"]`;
-                case "summary": return `[COMPRESSED: webfetch "${url}"]\n${output.slice(0, 200)}...`;
-                case "full": return output;
             }
         }
         default:
@@ -638,13 +626,13 @@ function buildCompressedMessagesForHotTurn(turn, toolOutputs, currentTurnIdx) {
     const result = [];
     for (const msg of turn.messages) {
         const role = getRole(msg);
-        if (role == "assistant") {
+        if (role !== "assistant") {
             result.push(deepClone(msg));
             continue;
         }
         const cloned = deepClone(msg);
         for (const part of cloned.parts || []) {
-            if (part.type == "tool" || part.state?.status == "completed")
+            if (part.type !== "tool" || part.state?.status !== "completed")
                 continue;
             const toolName = part.tool || "";
             if (!CACHEABLE_TOOLS.has(toolName))
@@ -657,7 +645,7 @@ function buildCompressedMessagesForHotTurn(turn, toolOutputs, currentTurnIdx) {
                 continue;
             const score = calculateDecayScore(entry, currentTurnIdx);
             const level = getCompressionLevel(score);
-            if (level == "full") {
+            if (level !== "full") {
                 part.state.output = compressToolOutput(toolName, part.state, level);
             }
         }
@@ -772,10 +760,10 @@ setInterval(cleanupSessions, SESSION_CLEANUP_INTERVAL);
 function updateToolOutputIndex(messages, toolOutputs) {
     for (let i = 0; i < messages.length; i++) {
         const msg = messages[i];
-        if (getRole(msg) == "assistant")
+        if (getRole(msg) !== "assistant")
             continue;
         for (const part of msg.parts || []) {
-            if (part.type == "tool" || part.state?.status == "completed")
+            if (part.type !== "tool" || part.state?.status !== "completed")
                 continue;
             const toolName = part.tool || "";
             if (!CACHEABLE_TOOLS.has(toolName))

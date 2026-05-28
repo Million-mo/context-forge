@@ -251,6 +251,86 @@ server.registerTool(
   }
 );
 
+server.registerTool(
+  "ctx_fetch_and_index",
+  {
+    title: "Fetch and Index Web Content",
+    description: "Fetch web content and index it for search",
+    inputSchema: FetchAndIndexSchema,
+  },
+  async (args) => {
+    try {
+      const response = await fetch(args.url, {
+        headers: { "User-Agent": "mcp_ctx_tool/1.0" },
+        signal: AbortSignal.timeout(15000),
+      });
+      if (!response.ok) {
+        return { content: [{ type: "text", text: `HTTP ${response.status}: ${response.statusText}` }], isError: true };
+      }
+      const text = await response.text();
+      const store = getStore();
+      const indexResult = await store.index(text, { source: args.source ?? args.url });
+      return {
+        content: [{ type: "text", text: JSON.stringify({ url: args.url, size: text.length, indexed: indexResult.totalChunks, sourceId: indexResult.sourceId }, null, 2) }],
+      };
+    } catch (error) {
+      return { content: [{ type: "text", text: `Fetch failed: ${error instanceof Error ? error.message : String(error)}` }], isError: true };
+    }
+  }
+);
+
+server.registerTool(
+  "ctx_doctor",
+  {
+    title: "Run System Diagnostics",
+    description: "Run system diagnostics",
+    inputSchema: z.object({}),
+  },
+  async () => {
+    const checks: Array<{ check: string; status: string; detail: string }> = [];
+    const runtimes = executor.runtimes;
+
+    for (const lang of ["javascript", "typescript", "python", "shell"] as const) {
+      const rt = getRuntimeInfo(runtimes, lang);
+      checks.push({
+        check: `${lang} runtime`,
+        status: rt.available ? "pass" : "fail",
+        detail: rt.available ? `${rt.command} (${rt.version})` : "not found",
+      });
+    }
+
+    try {
+      const { execSync } = await import("child_process");
+      const rtkVersion = execSync("rtk --version 2>/dev/null || rtk version 2>/dev/null || echo 'not found'", {
+        encoding: "utf-8",
+        timeout: 3000,
+      }).trim();
+      checks.push({ check: "rtk", status: "pass", detail: rtkVersion });
+    } catch {
+      checks.push({ check: "rtk", status: "warn", detail: "not found in PATH" });
+    }
+
+    try {
+      const store = getStore();
+      const stats = store.getStats();
+      checks.push({ check: "content store", status: "pass", detail: `${stats.totalChunks} chunks, ${stats.totalSources} sources` });
+    } catch (e) {
+      checks.push({ check: "content store", status: "fail", detail: `${e instanceof Error ? e.message : String(e)}` });
+    }
+
+    const passed = checks.filter(c => c.status === "pass").length;
+    const failed = checks.filter(c => c.status === "fail").length;
+    const warned = checks.filter(c => c.status === "warn").length;
+
+    return {
+      content: [{
+        type: "text",
+        text: JSON.stringify({ version: VERSION, platform: process.platform, node: process.version, summary: { passed, failed, warned }, checks }, null, 2),
+      }],
+    };
+  }
+);
+
 server.server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
     { name: "ctx_ping", description: "Health check for mcp_ctx_tool", inputSchema: { type: "object", properties: {} } },
