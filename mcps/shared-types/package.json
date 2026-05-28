@@ -13,6 +13,14 @@
     "./prompts": {
       "types": "./dist/prompts.d.ts",
       "import": "./dist/prompts.js"
+    },
+    "./install-helper": {
+      "types": "./dist/install-helper.d.ts",
+      "import": "./dist/install-helper.js"
+    },
+    "./schema": {
+      "types": "./dist/schema.d.ts",
+      "import": "./dist/schema.js"
     }
   },
   "scripts": {

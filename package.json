@@ -15,8 +15,9 @@
     "install:all": "tsx scripts/install-all.ts",
     "install:all:uninstall": "tsx scripts/install-all.ts --uninstall",
     "build:shared-types": "npm run build --workspace=@context-forge/shared-types",
-    "build:ctx-tool": "npm run build --workspace=@context-forge/mcp-ctx-tool",
-    "build:ctx-summary": "npm run build --workspace=@context-forge/mcp-ctx-summary",
-    "typecheck": "npm run typecheck --workspace=@context-forge/shared-types"
+    "build:ctx-tool": "npm run build:shared-types && npm run build --workspace=@context-forge/mcp-ctx-tool",
+    "build:ctx-summary": "npm run build:shared-types && npm run build --workspace=@context-forge/mcp-ctx-summary",
+    "build:all": "npm run build:ctx-tool && npm run build:ctx-summary",
+    "typecheck": "npm run typecheck --workspace=@context-forge/shared-types && npm run typecheck --workspace=@context-forge/mcp-ctx-summary"
   }
 }

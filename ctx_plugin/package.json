@@ -11,7 +11,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@opencode-ai/plugin": "latest"
+    "@opencode-ai/plugin": "^1.15.5"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

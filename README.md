@@ -120,7 +120,11 @@ context_forge/
 │   └── shared-types/              # 共享 TypeScript 类型
 ├── ctx_plugin/                    # opencode 插件（RTK + Caveman）
 │   ├── src/
-│   │   ├── plugin.ts             # opencode 插件入口
+│   │   ├── index.ts              # barrel export
+│   │   ├── caveman.ts            # Caveman 压缩模式插件
+│   │   ├── routing-plugin.ts     # Routing + 安全策略插件
+│   │   ├── rtk.ts                # RTK 指令重写插件
+│   │   ├── transform.ts          # Transform 消息压缩插件
 │   │   ├── cli.ts                # install/status CLI
 │   │   ├── security.ts           # 策略引擎 + shell-escape 扫描
 │   │   └── hooks/

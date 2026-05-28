@@ -43,8 +43,23 @@ function loadConfig(): RecallConfig {
     config.dataDir = DATA_DIR
   }
 
-  if (process.env.LLM_API_KEY) {
+  // Unified env var (CONTEXT_FORGE_LLM_*) takes precedence, then legacy vars, then config.json
+  if (process.env.CONTEXT_FORGE_LLM_API_KEY) {
+    config.llm.apiKey = process.env.CONTEXT_FORGE_LLM_API_KEY
+  } else if (process.env.LLM_API_KEY) {
     config.llm.apiKey = process.env.LLM_API_KEY
+  }
+
+  if (process.env.CONTEXT_FORGE_LLM_BASE_URL) {
+    config.llm.baseUrl = process.env.CONTEXT_FORGE_LLM_BASE_URL
+  } else if (process.env.LLM_BASE_URL) {
+    config.llm.baseUrl = process.env.LLM_BASE_URL
+  }
+
+  if (process.env.CONTEXT_FORGE_LLM_MODEL) {
+    config.llm.model = process.env.CONTEXT_FORGE_LLM_MODEL
+  } else if (process.env.LLM_MODEL) {
+    config.llm.model = process.env.LLM_MODEL
   }
 
   if (!config.llm.apiKey && config.llm.provider === "anthropic") {

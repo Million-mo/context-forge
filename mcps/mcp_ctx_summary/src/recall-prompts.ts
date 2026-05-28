@@ -1,6 +1,6 @@
-import type { StoredMessage, TurnSummary } from "./types.js"
+import type { StoredMessage, TurnSummary } from "@context-forge/shared-types"
 
-export { SUMMARY_SYSTEM_PROMPT, SUMMARY_USER_PROMPT, MAX_SERIALIZED_SIZE } from "./prompts.js"
+export { SUMMARY_SYSTEM_PROMPT, SUMMARY_USER_PROMPT, MAX_SERIALIZED_SIZE } from "@context-forge/shared-types/prompts"
 
 export const RECALL_SYSTEM_PROMPT = `You are a memory recall assistant. Given a conversation turn and a query, recall the most relevant information that answers the user's question.
 

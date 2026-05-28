@@ -10,10 +10,10 @@
  * - Hook: chat.message (fires on every user message)
  *
  * Environment variables:
+ *   CONTEXT_FORGE_LLM_API_KEY   (or TRANSFORM_LLM_API_KEY legacy)
+ *   CONTEXT_FORGE_LLM_BASE_URL  (or TRANSFORM_LLM_BASE_URL legacy)
+ *   CONTEXT_FORGE_LLM_MODEL     (or TRANSFORM_LLM_MODEL legacy)
  *   TRANSFORM_DATA_DIR  - defaults to <workspace>/ctx_plugin/transform-data
- *   TRANSFORM_LLM_API_KEY
- *   TRANSFORM_LLM_BASE_URL  - defaults to http://116.204.104.177:8123
- *   TRANSFORM_LLM_MODEL     - defaults to GLM-4.7
  */
 
 // ─── Imports ─────────────────────────────────────────────────────────────────
@@ -140,9 +140,9 @@ const SESSION_ID = process.env.SESSION_ID || "default"
 // ─── LLM Config ─────────────────────────────────────────────────────────────
 
 const LLM_CONFIG = {
-  apiKey: process.env.TRANSFORM_LLM_API_KEY || "placeholder",
-  baseUrl: process.env.TRANSFORM_LLM_BASE_URL || "http://116.204.104.177:8123",
-  model: process.env.TRANSFORM_LLM_MODEL || "GLM-4.7",
+  apiKey: process.env.CONTEXT_FORGE_LLM_API_KEY || process.env.TRANSFORM_LLM_API_KEY || "placeholder",
+  baseUrl: process.env.CONTEXT_FORGE_LLM_BASE_URL || process.env.TRANSFORM_LLM_BASE_URL || "http://116.204.104.177:8123",
+  model: process.env.CONTEXT_FORGE_LLM_MODEL || process.env.TRANSFORM_LLM_MODEL || "GLM-4.7",
   maxTokens: 2048,
   temperature: 0.3,
 }
@@ -150,12 +150,17 @@ const LLM_CONFIG = {
 function validateLLMConfig(): void {
   if (LLM_CONFIG.apiKey === "placeholder") {
     log.warn("LLM summarization DISABLED (no API key configured)")
-    log.warn("Set TRANSFORM_LLM_API_KEY + TRANSFORM_LLM_BASE_URL to enable turn summaries")
+    log.warn("Set CONTEXT_FORGE_LLM_API_KEY (+ CONTEXT_FORGE_LLM_BASE_URL) to enable turn summaries")
   }
 }
 
 // ─── SQLite Store ────────────────────────────────────────────────────────────
 
+/**
+ * ⚠️ Keep in sync with @context-forge/shared-types/schema.
+ * This is a copy because transform.ts runs as an opencode plugin
+ * and cannot import from the npm workspace at runtime.
+ */
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS global_summary_cache (
   content_hash TEXT NOT NULL PRIMARY KEY,
@@ -727,12 +732,6 @@ function compressToolOutput(toolName: string, state: any, level: CompressionLeve
         ].join("\n")}`
         case "placeholder": return `[COMPRESSED: read "${filePath}" — ${lineCount} lines]`
         case "minimal": return `[COMPRESSED: read "${filePath}"]`
-        case "summary": return `[COMPRESSED: read "${filePath}"]\n${[
-          ...lines.slice(0, 3),
-          `  ... ${Math.max(0, lineCount - 6)} more lines ...`,
-          ...lines.slice(-3),
-        ].join("\n")}`
-        case "full": return output
       }
     }
     case "glob": {
@@ -744,8 +743,6 @@ function compressToolOutput(toolName: string, state: any, level: CompressionLeve
         case "summary": return `[COMPRESSED: glob "${pattern}"] — ${count} matches: ${lines.slice(0, 5).join(", ")}${count > 5 ? ` ... +${count - 5} more` : ""}`
         case "placeholder": return `[COMPRESSED: glob "${pattern}" — ${count} matches]`
         case "minimal": return `[COMPRESSED: glob "${pattern}"]`
-        case "summary": return `[COMPRESSED: glob "${pattern}"] — ${count} matches: ${lines.slice(0, 5).join(", ")}${count > 5 ? ` ... +${count - 5} more` : ""}`
-        case "full": return output
       }
     }
     case "grep": {
@@ -757,8 +754,6 @@ function compressToolOutput(toolName: string, state: any, level: CompressionLeve
         case "summary": return `[COMPRESSED: grep "${pattern}"] — ${count} matches: ${lines.slice(0, 5).join(" | ")}${count > 5 ? ` ... +${count - 5} more` : ""}`
         case "placeholder": return `[COMPRESSED: grep "${pattern}" — ${count} matches]`
         case "minimal": return `[COMPRESSED: grep "${pattern}"]`
-        case "summary": return `[COMPRESSED: grep "${pattern}"] — ${count} matches: ${lines.slice(0, 5).join(" | ")}${count > 5 ? ` ... +${count - 5} more` : ""}`
-        case "full": return output
       }
     }
     case "webfetch": {
@@ -769,8 +764,6 @@ function compressToolOutput(toolName: string, state: any, level: CompressionLeve
         case "summary": return `[COMPRESSED: webfetch "${url}"]\n${output.slice(0, 200)}...`
         case "placeholder": return `[COMPRESSED: webfetch "${url}" — ${size} bytes]`
         case "minimal": return `[COMPRESSED: webfetch "${url}"]`
-        case "summary": return `[COMPRESSED: webfetch "${url}"]\n${output.slice(0, 200)}...`
-        case "full": return output
       }
     }
     default:

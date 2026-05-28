@@ -17,12 +17,11 @@
     "build:start": "npm run build && node dist/server.js"
   },
   "dependencies": {
+    "@context-forge/shared-types": "file:../shared-types",
     "@modelcontextprotocol/sdk": "^1.0.0",
-    "better-sqlite3": "^11.10.0",
     "zod": "^3.25.0"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.0.0",
     "@types/node": "^22.0.0",
     "tsx": "^4.0.0",
     "typescript": "^5.8.0"

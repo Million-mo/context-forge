@@ -52,6 +52,15 @@ const PLUGINS = [
       { src: join(DIST_DIR, "hooks"),             dst: join(PLUGINS_OUT, "hooks") },
     ],
   },
+  {
+    name: "transform",
+    srcTs: join(ROOT, "src", "transform.ts"),
+    distJs: join(DIST_DIR, "transform.js"),
+    outMjs: join(PLUGINS_OUT, "transform.mjs"),
+    srcName: "ctx_plugin/src/transform.ts",
+    // Transform only imports node:builtins, no project deps needed
+    deps: [],
+  },
 ]
 
 const PLUGIN_HEADER = (name, src) =>
@@ -83,8 +92,8 @@ function stripTypes(code) {
   // Remove const assertions
   result = result.replace(/\bas\s+const\b/g, "")
 
-  // Remove non-null assertions
-  result = result.replace(/!\s*(?=[=,)\];}])/g, "")
+  // Remove non-null assertions (exclude != and !==)
+  result = result.replace(/!(?!=)\s*(?=[=,)\];}])/g, "")
 
   // Remove generic parameters from function calls
   result = result.replace(/<(?!\s*)(?![A-Z][a-z])[^>{}]+>(?=\s*[\(])/g, "")

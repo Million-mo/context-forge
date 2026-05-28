@@ -2,7 +2,9 @@
  * Summary MCP Server — mcp_ctx_summary
  *
  * Provides retrieval tools over the shared summaries database
- * (data/summaries.db), populated by transform-server.
+ * (summaries.db), populated by ctx_plugin's transform.ts plugin.
+ *
+ * Schema: @context-forge/shared-types/schema
  *
  * Tools:
  *   summary_recall    - Intent-driven recall with LLM generation
@@ -20,7 +22,7 @@ import { z } from "zod"
 import { existsSync, statSync } from "fs"
 import { resolve } from "path"
 import Database from "better-sqlite3"
-import type { RecallOptions, RecallResult, StoredMessage, SummaryWithSession, TurnSummary } from "./types.js"
+import type { RecallOptions, RecallResult, StoredMessage, SummaryWithSession, TurnSummary } from "@context-forge/shared-types"
 import { buildRecallPrompt } from "./recall-prompts.js"
 import { createRecallLLMClient } from "./llm.js"
 
@@ -66,7 +68,7 @@ function openDb(): any {
   if (db) return db
   const path = getDbPath()
   if (!existsSync(path)) {
-    throw new Error(`Database not found at ${path}. Start transform-server first.`)
+    throw new Error(`Database not found at ${path}. Enable the transform plugin in ctx_plugin first.`)
   }
   db = new Database(path, { readonly: true })
   db.pragma("journal_mode = WAL")

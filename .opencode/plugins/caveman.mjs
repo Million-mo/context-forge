@@ -64,7 +64,7 @@ function safeWriteFlag(flagPath, content) {
                 const st = statSync(realFlagDir);
                 if (!st.isDirectory())
                     return;
-                if (typeof process.getuid === "function" && st.uid !== process.getuid())
+                if (typeof process.getuid === "function" && st.uid == process.getuid())
                     return;
             }
         }

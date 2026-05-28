@@ -1,0 +1,11 @@
+{
+  "llm": {
+    "provider": "openai",
+    "model": "glm-4-flash",
+    "apiKey": "",
+    "baseUrl": "http://localhost:8080",
+    "maxTokens": 2048,
+    "temperature": 0.3
+  },
+  "dataDir": "./data"
+}
