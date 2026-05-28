@@ -19,23 +19,26 @@ const VALID_MODES = new Set([
     "commit", "review", "compress",
 ]);
 const INDEPENDENT_MODES = new Set(["commit", "review", "compress"]);
-const CAVEMAN_FLAG = (() => {
-    const base = process.env.OPENCODE_CONFIG_DIR ||
-        (process.env.XDG_CONFIG_HOME && path.join(process.env.XDG_CONFIG_HOME, "opencode")) ||
-        (process.platform === "win32"
-            ? path.join(process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming"), "opencode")
-            : path.join(os.homedir(), ".config", "opencode"));
-    return path.join(base, ".caveman-active");
-})();
-const CAVEMAN_CONFIG_DIR = (() => {
+function getCtxPluginDir() {
+    if (process.env.CTX_PLUGIN_CONFIG_DIR)
+        return process.env.CTX_PLUGIN_CONFIG_DIR;
     if (process.env.XDG_CONFIG_HOME)
-        return path.join(process.env.XDG_CONFIG_HOME, "caveman");
+        return path.join(process.env.XDG_CONFIG_HOME, "ctx_plugin");
     if (process.platform === "win32") {
-        return path.join(process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming"), "caveman");
+        return path.join(process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming"), "ctx_plugin");
     }
-    return path.join(os.homedir(), ".config", "caveman");
-})();
-const CAVEMAN_CONFIG_FILE = path.join(CAVEMAN_CONFIG_DIR, "config.json");
+    return path.join(os.homedir(), ".config", "ctx_plugin");
+}
+const CAVEMAN_FLAG = path.join(getCtxPluginDir(), "caveman-active");
+const CTX_PLUGIN_CONFIG_FILE = path.join(getCtxPluginDir(), "config.json");
+function getLegacyCavemanConfigPath() {
+    if (process.env.XDG_CONFIG_HOME)
+        return path.join(process.env.XDG_CONFIG_HOME, "caveman", "config.json");
+    if (process.platform === "win32") {
+        return path.join(process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming"), "caveman", "config.json");
+    }
+    return path.join(os.homedir(), ".config", "caveman", "config.json");
+}
 // ---------------------------------------------------------------------------
 // Flag I/O
 // ---------------------------------------------------------------------------
@@ -44,7 +47,14 @@ function getDefaultMode() {
     if (env && VALID_MODES.has(env.toLowerCase()))
         return env.toLowerCase();
     try {
-        const cfg = JSON.parse(readFileSync(CAVEMAN_CONFIG_FILE, "utf8"));
+        const cfg = JSON.parse(readFileSync(CTX_PLUGIN_CONFIG_FILE, "utf8"));
+        const mode = cfg.caveman?.defaultMode || cfg.defaultMode;
+        if (mode && VALID_MODES.has(mode.toLowerCase()))
+            return mode.toLowerCase();
+    }
+    catch { }
+    try {
+        const cfg = JSON.parse(readFileSync(getLegacyCavemanConfigPath(), "utf8"));
         if (cfg.defaultMode && VALID_MODES.has(cfg.defaultMode.toLowerCase())) {
             return cfg.defaultMode.toLowerCase();
         }
@@ -64,7 +74,7 @@ function safeWriteFlag(flagPath, content) {
                 const st = statSync(realFlagDir);
                 if (!st.isDirectory())
                     return;
-                if (typeof process.getuid === "function" && st.uid == process.getuid())
+                if (typeof process.getuid === "function" && st.uid !== process.getuid())
                     return;
             }
         }
@@ -77,7 +87,7 @@ function safeWriteFlag(flagPath, content) {
                 return;
         }
         catch (e) {
-            if (e.code == "ENOENT")
+            if (e.code !== "ENOENT")
                 return;
         }
         const tmp = path.join(realFlagDir, `.caveman-tmp.${process.pid}.${Date.now()}`);
@@ -152,17 +162,6 @@ function parseModeChange(prompt) {
             return "review";
         if (cmd === "/caveman-compress")
             return "compress";
-        if (cmd === "/caveman") {
-            if (!arg)
-                return getDefaultMode();
-            if (arg === "off" || arg === "stop" || arg === "disable")
-                return "off";
-            if (arg === "wenyan-full")
-                return "wenyan";
-            if (VALID_MODES.has(arg) && !INDEPENDENT_MODES.has(arg))
-                return arg;
-            return null;
-        }
     }
     return null;
 }

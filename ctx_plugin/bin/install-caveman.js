@@ -91,29 +91,42 @@ if (!existsSync(AGENTS_MD) || FORCE) {
   console.log(`  ${rpad("✓", 2)} AGENTS.md already exists  (use --force to overwrite)`)
 }
 
-// ── Caveman config dir ────────────────────────────────────────────
+// ── Unified ctx_plugin config dir (~/.ctx_plugin/) ─────────────────
 
-const CAVEMAN_CONFIG_DIR = (() => {
-  if (process.env.XDG_CONFIG_HOME) return join(process.env.XDG_CONFIG_HOME, "caveman")
+const CTX_PLUGIN_CONFIG_DIR = (() => {
+  if (process.env.CTX_PLUGIN_CONFIG_DIR) return process.env.CTX_PLUGIN_CONFIG_DIR
+  if (process.env.XDG_CONFIG_HOME) return join(process.env.XDG_CONFIG_HOME, "ctx_plugin")
   if (process.platform === "win32") {
     return join(
       process.env.APPDATA || join(os.homedir(), "AppData", "Roaming"),
-      "caveman",
+      "ctx_plugin",
     )
   }
-  return join(os.homedir(), ".config", "caveman")
+  return join(os.homedir(), ".config", "ctx_plugin")
 })()
 
-const CAVEMAN_CONFIG_FILE = join(CAVEMAN_CONFIG_DIR, "config.json")
+const CTX_PLUGIN_CONFIG_FILE = join(CTX_PLUGIN_CONFIG_DIR, "config.json")
 
 section("Config")
-if (!existsSync(CAVEMAN_CONFIG_FILE)) {
-  mkdirSync(CAVEMAN_CONFIG_DIR, { recursive: true })
-  writeJson(CAVEMAN_CONFIG_FILE, JSON.stringify({ defaultMode: "full" }, null, 2))
-  console.log(`  ✓ created  →  ${CAVEMAN_CONFIG_FILE}`)
-  console.log(`             defaultMode: "full"`)
+if (!existsSync(CTX_PLUGIN_CONFIG_FILE)) {
+  mkdirSync(CTX_PLUGIN_CONFIG_DIR, { recursive: true })
+  writeJson(CTX_PLUGIN_CONFIG_FILE, JSON.stringify({
+    llm: {
+      provider: "openai",
+      model: "GLM-4.7",
+      apiKey: "",
+      baseUrl: "http://116.204.104.177:8123",
+      maxTokens: 2048,
+      temperature: 0.3,
+    },
+    caveman: {
+      defaultMode: "full",
+    },
+  }, null, 2))
+  console.log(`  ✓ created  →  ${CTX_PLUGIN_CONFIG_FILE}`)
+  console.log(`             caveman.defaultMode: "full"`)
 } else {
-  console.log(`  ${rpad("✓", 2)} config already exists  (${CAVEMAN_CONFIG_FILE})`)
+  console.log(`  ${rpad("✓", 2)} config already exists  (${CTX_PLUGIN_CONFIG_FILE})`)
 }
 
 console.log("\nDone. Restart opencode to activate Caveman.\n")
@@ -125,5 +138,5 @@ console.log("  /caveman-compress <file>            — compress memory file")
 console.log("  /caveman-help                       — quick reference")
 console.log("  stop caveman / normal mode          — deactivate\n")
 console.log("Set default mode:")
-console.log("  export CAVEMAN_DEFAULT_MODE=ultra   — env var (highest priority)")
-console.log("  or edit ~/.config/caveman/config.json\n")
+console.log("  export CAVEMAN_DEFAULT_MODE=ultra       — env var (highest priority)")
+console.log("  or edit ~/.ctx_plugin/config.json\n")

@@ -3,7 +3,7 @@
  *
  * Ultra-compressed communication mode with:
  *   - Session init: writes .caveman-active flag on startup
- *   - Mode tracking: parses /caveman slash commands and natural language
+ *   - Mode tracking: parses /caveman-* slash commands and natural language
  *   - Reinforcement: appends per-turn reminder when active
  *   - Skill loading: filters SKILL.md content by active intensity level
  *
@@ -19,7 +19,7 @@ import { existsSync, unlinkSync } from "node:fs"
 const { mkdirSync, lstatSync, realpathSync, statSync, openSync, writeSync, closeSync, renameSync, readFileSync, readSync } = fs
 
 // ---------------------------------------------------------------------------
-// Config
+// Config (unified: ~/.ctx_plugin/)
 // ---------------------------------------------------------------------------
 
 const VALID_MODES = new Set([
@@ -30,24 +30,28 @@ const VALID_MODES = new Set([
 
 const INDEPENDENT_MODES = new Set(["commit", "review", "compress"])
 
-const CAVEMAN_FLAG = (() => {
-  const base = process.env.OPENCODE_CONFIG_DIR ||
-    (process.env.XDG_CONFIG_HOME && path.join(process.env.XDG_CONFIG_HOME, "opencode")) ||
-    (process.platform === "win32"
-      ? path.join(process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming"), "opencode")
-      : path.join(os.homedir(), ".config", "opencode"))
-  return path.join(base, ".caveman-active")
-})()
-
-const CAVEMAN_CONFIG_DIR = (() => {
-  if (process.env.XDG_CONFIG_HOME) return path.join(process.env.XDG_CONFIG_HOME, "caveman")
+function getCtxPluginDir(): string {
+  if (process.env.CTX_PLUGIN_CONFIG_DIR) return process.env.CTX_PLUGIN_CONFIG_DIR
+  if (process.env.XDG_CONFIG_HOME) return path.join(process.env.XDG_CONFIG_HOME, "ctx_plugin")
   if (process.platform === "win32") {
-    return path.join(process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming"), "caveman")
+    return path.join(process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming"), "ctx_plugin")
   }
-  return path.join(os.homedir(), ".config", "caveman")
-})()
+  return path.join(os.homedir(), ".config", "ctx_plugin")
+}
 
-const CAVEMAN_CONFIG_FILE = path.join(CAVEMAN_CONFIG_DIR, "config.json")
+const CAVEMAN_FLAG = path.join(getCtxPluginDir(), "caveman-active")
+
+// Unified config file (new location). Also try legacy caveman config for migration.
+const CTX_PLUGIN_CONFIG_FILE = path.join(getCtxPluginDir(), "config.json")
+
+// Legacy: ~/.config/caveman/config.json — remove after migration
+function getLegacyCavemanConfigPath(): string {
+  if (process.env.XDG_CONFIG_HOME) return path.join(process.env.XDG_CONFIG_HOME, "caveman", "config.json")
+  if (process.platform === "win32") {
+    return path.join(process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming"), "caveman", "config.json")
+  }
+  return path.join(os.homedir(), ".config", "caveman", "config.json")
+}
 
 // ---------------------------------------------------------------------------
 // Flag I/O
@@ -56,12 +60,22 @@ const CAVEMAN_CONFIG_FILE = path.join(CAVEMAN_CONFIG_DIR, "config.json")
 function getDefaultMode() {
   const env = process.env.CAVEMAN_DEFAULT_MODE
   if (env && VALID_MODES.has(env.toLowerCase())) return env.toLowerCase()
+
+  // Try unified config first (~/.ctx_plugin/config.json)
   try {
-    const cfg = JSON.parse(readFileSync(CAVEMAN_CONFIG_FILE, "utf8"))
+    const cfg = JSON.parse(readFileSync(CTX_PLUGIN_CONFIG_FILE, "utf8"))
+    const mode = cfg.caveman?.defaultMode || cfg.defaultMode
+    if (mode && VALID_MODES.has(mode.toLowerCase())) return mode.toLowerCase()
+  } catch {}
+
+  // Fall back to legacy (~/.config/caveman/config.json)
+  try {
+    const cfg = JSON.parse(readFileSync(getLegacyCavemanConfigPath(), "utf8"))
     if (cfg.defaultMode && VALID_MODES.has(cfg.defaultMode.toLowerCase())) {
       return cfg.defaultMode.toLowerCase()
     }
   } catch {}
+
   return "full"
 }
 
@@ -159,14 +173,6 @@ function parseModeChange(prompt) {
     if (cmd === "/caveman-commit") return "commit"
     if (cmd === "/caveman-review") return "review"
     if (cmd === "/caveman-compress") return "compress"
-
-    if (cmd === "/caveman") {
-      if (!arg) return getDefaultMode()
-      if (arg === "off" || arg === "stop" || arg === "disable") return "off"
-      if (arg === "wenyan-full") return "wenyan"
-      if (VALID_MODES.has(arg) && !INDEPENDENT_MODES.has(arg)) return arg
-      return null
-    }
   }
 
   return null

@@ -37,28 +37,42 @@ function getPluginsDir(): string {
 }
 
 // ─────────────────────────────────────────────────────────
+// Shared: build-plugins runner (called once per install batch)
+// ─────────────────────────────────────────────────────────
+
+let _buildPluginsDone = false
+
+function ensurePluginsBuilt(): { success: boolean; message: string } {
+  if (_buildPluginsDone) return { success: true, message: "already built" }
+
+  const pluginsDir = getPluginsDir()
+  if (!existsSync(pluginsDir)) {
+    mkdirSync(pluginsDir, { recursive: true })
+  }
+
+  const buildScript = resolve(getPluginRoot(), "bin", "build-plugins.mjs")
+  if (!existsSync(buildScript)) {
+    return { success: false, message: `build-plugins.mjs not found at ${buildScript}. Run: cd ctx_plugin && npm install && npm run build` }
+  }
+
+  try {
+    execSync(`node "${buildScript}"`, { stdio: "pipe", cwd: getPluginRoot() })
+  } catch (e) {
+    const err = e as { message?: string; stderr?: Buffer }
+    return { success: false, message: `build-plugins.mjs failed:\n${err.stderr?.toString() ?? err.message}` }
+  }
+
+  _buildPluginsDone = true
+  return { success: true, message: "built" }
+}
+
+// ─────────────────────────────────────────────────────────
 // Component: Caveman Plugin
 // ─────────────────────────────────────────────────────────
 
 function installCavemanPlugin(): { success: boolean; message: string } {
   const pluginsDir = getPluginsDir();
   const pluginPath = resolve(pluginsDir, "caveman.mjs");
-  const buildScript = resolve(getPluginRoot(), "bin", "build-plugins.mjs");
-
-  if (!existsSync(pluginsDir)) {
-    mkdirSync(pluginsDir, { recursive: true });
-  }
-
-  if (!existsSync(buildScript)) {
-    return { success: false, message: `build-plugins.mjs not found at ${buildScript}. Run: cd ctx_plugin && npm install && npm run build` };
-  }
-
-  try {
-    execSync(`node "${buildScript}"`, { stdio: "pipe", cwd: getPluginRoot() });
-  } catch (e) {
-    const err = e as { message?: string; stderr?: Buffer };
-    return { success: false, message: `build-plugins.mjs failed:\n${err.stderr?.toString() ?? err.message}` };
-  }
 
   if (!existsSync(pluginPath)) {
     return { success: false, message: `caveman.mjs not generated at ${pluginPath}` };
@@ -112,22 +126,6 @@ function statusCavemanPlugin(): { installed: boolean; details: Record<string, st
 function installRoutingPlugin(): { success: boolean; message: string } {
   const pluginsDir = getPluginsDir();
   const pluginPath = resolve(pluginsDir, "routing.mjs");
-  const buildScript = resolve(getPluginRoot(), "bin", "build-plugins.mjs");
-
-  if (!existsSync(pluginsDir)) {
-    mkdirSync(pluginsDir, { recursive: true });
-  }
-
-  if (!existsSync(buildScript)) {
-    return { success: false, message: `build-plugins.mjs not found at ${buildScript}. Run: cd ctx_plugin && npm install && npm run build` };
-  }
-
-  try {
-    execSync(`node "${buildScript}"`, { stdio: "pipe", cwd: getPluginRoot() });
-  } catch (e) {
-    const err = e as { message?: string; stderr?: Buffer };
-    return { success: false, message: `build-plugins.mjs failed:\n${err.stderr?.toString() ?? err.message}` };
-  }
 
   if (!existsSync(pluginPath)) {
     return { success: false, message: `routing.mjs not generated at ${pluginPath}` };
@@ -164,6 +162,59 @@ function uninstallRoutingPlugin(): { success: boolean; message: string } {
 
 function statusRoutingPlugin(): { installed: boolean; details: Record<string, string> } {
   const pluginPath = resolve(getPluginsDir(), "routing.mjs");
+  const pluginsDir = getPluginsDir();
+  return {
+    installed: existsSync(pluginPath),
+    details: {
+      path: pluginPath,
+      dir_exists: existsSync(pluginsDir) ? "yes" : "no",
+    },
+  };
+}
+
+// ─────────────────────────────────────────────────────────
+// Component: Transform Plugin
+// ─────────────────────────────────────────────────────────
+
+function installTransformPlugin(): { success: boolean; message: string } {
+  const pluginsDir = getPluginsDir();
+  const pluginPath = resolve(pluginsDir, "transform.mjs");
+
+  if (!existsSync(pluginPath)) {
+    return { success: false, message: `transform.mjs not generated at ${pluginPath}` };
+  }
+
+  return { success: true, message: `Transform plugin installed at ${pluginPath}. Restart opencode to use.` };
+}
+
+function uninstallTransformPlugin(): { success: boolean; message: string } {
+  const pluginPath = resolve(getPluginsDir(), "transform.mjs");
+  if (!existsSync(pluginPath)) {
+    return { success: true, message: `Transform plugin is not installed.` };
+  }
+
+  const content = readFileSync(pluginPath, "utf-8");
+  if (!content.includes("TransformPlugin")) {
+    return { success: false, message: `Unknown plugin at ${pluginPath}. Will not remove.` };
+  }
+
+  try {
+    rmSync(pluginPath);
+  } catch (err: unknown) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "EPERM" || code === "EACCES") {
+      return {
+        success: false,
+        message: `Permission denied. The file may be locked by another process (e.g. opencode).\nClose opencode and run: ctx_plugin uninstall transform`
+      };
+    }
+    throw err;
+  }
+  return { success: true, message: `Transform plugin removed from ${pluginPath}` };
+}
+
+function statusTransformPlugin(): { installed: boolean; details: Record<string, string> } {
+  const pluginPath = resolve(getPluginsDir(), "transform.mjs");
   const pluginsDir = getPluginsDir();
   return {
     installed: existsSync(pluginPath),
@@ -278,6 +329,17 @@ function printStatus(): void {
     console.log(`    Run 'ctx_plugin install routing' to install`);
   }
 
+  // Transform plugin
+  const transformPlugin = statusTransformPlugin();
+  console.log(`\nTransform plugin (summaries):`);
+  if (transformPlugin.installed) {
+    console.log(`  ✅ Installed`);
+    console.log(`    Path: ${transformPlugin.details.path}`);
+  } else {
+    console.log(`  ❌ Not installed`);
+    console.log(`    Run 'ctx_plugin install transform' to install`);
+  }
+
   // RTK
   const rtk = statusRtk();
   console.log(`\nRTK (command rewriting):`);
@@ -311,6 +373,89 @@ function printDoctor(): void {
 }
 
 // ─────────────────────────────────────────────────────────
+// Component: Caveman Runtime Control
+// ─────────────────────────────────────────────────────────
+
+const VALID_CAVEMAN_MODES = new Set([
+  "off", "lite", "full", "ultra",
+  "wenyan-lite", "wenyan", "wenyan-full", "wenyan-ultra",
+])
+
+function getCtxPluginDir(): string {
+  if (process.env.CTX_PLUGIN_CONFIG_DIR) return process.env.CTX_PLUGIN_CONFIG_DIR
+  if (process.env.XDG_CONFIG_HOME) return resolve(process.env.XDG_CONFIG_HOME, "ctx_plugin")
+  if (process.platform === "win32") {
+    return resolve(process.env.APPDATA || resolve(homedir(), "AppData", "Roaming"), "ctx_plugin")
+  }
+  return resolve(homedir(), ".config", "ctx_plugin")
+}
+
+function getCavemanFlagPath(): string {
+  return resolve(getCtxPluginDir(), "caveman-active")
+}
+
+function cavemanActivate(mode?: string): void {
+  const flagPath = getCavemanFlagPath()
+  const dir = dirname(flagPath)
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+
+  if (!mode || mode === "on") {
+    // Use default mode
+    const env = process.env.CAVEMAN_DEFAULT_MODE
+    if (env && VALID_CAVEMAN_MODES.has(env.toLowerCase())) {
+      mode = env.toLowerCase()
+    } else {
+      // Try unified config first, then legacy
+      const unifiedPath = resolve(getCtxPluginDir(), "config.json")
+      const legacyPath = resolve(
+        process.env.XDG_CONFIG_HOME || resolve(homedir(), ".config"),
+        "caveman", "config.json"
+      )
+      mode = "full"
+      for (const p of [unifiedPath, legacyPath]) {
+        try {
+          const cfg = JSON.parse(readFileSync(p, "utf8"))
+          const m = cfg.caveman?.defaultMode || cfg.defaultMode
+          if (m && VALID_CAVEMAN_MODES.has(m.toLowerCase())) {
+            mode = m.toLowerCase()
+            break
+          }
+        } catch { /* try next */ }
+      }
+    }
+  }
+
+  if (!VALID_CAVEMAN_MODES.has(mode) || mode === "off") {
+    console.log(`Unknown mode: ${mode}`)
+    console.log(`Valid modes: ${[...VALID_CAVEMAN_MODES].filter(m => m !== "off").join(", ")}`)
+    process.exit(1)
+  }
+
+  writeFileSync(flagPath, mode, "utf-8")
+  console.log(`Caveman mode: ${mode}`)
+}
+
+function cavemanDeactivate(): void {
+  const flagPath = getCavemanFlagPath()
+  if (existsSync(flagPath)) {
+    rmSync(flagPath)
+    console.log("Caveman mode: off")
+  } else {
+    console.log("Caveman is already off")
+  }
+}
+
+function cavemanShowStatus(): void {
+  const flagPath = getCavemanFlagPath()
+  if (existsSync(flagPath)) {
+    const mode = readFileSync(flagPath, "utf-8").trim()
+    console.log(`Caveman mode: ${mode}`)
+  } else {
+    console.log("Caveman mode: off")
+  }
+}
+
+// ─────────────────────────────────────────────────────────
 // Main
 // ─────────────────────────────────────────────────────────
 
@@ -324,19 +469,28 @@ Components:
   rtk       - RTK binary availability check
 
 Commands:
-  ctx_plugin install [caveman|routing]   Install plugin
-  ctx_plugin uninstall [caveman|routing] Uninstall plugin
-  ctx_plugin status                       Show installation status
-  ctx_plugin doctor                       Run diagnostics
-  ctx_plugin security                     Show security policies
+  ctx_plugin install [caveman|routing|transform]   Install plugin
+  ctx_plugin uninstall [caveman|routing|transform] Uninstall plugin
+  ctx_plugin caveman [on|off|<level>]              Control caveman mode at runtime
+  ctx_plugin caveman status                        Show current caveman mode
+  ctx_plugin status                                 Show installation status
+  ctx_plugin doctor                                 Run diagnostics
+  ctx_plugin security                               Show security policies
+
+Caveman levels: lite, full, ultra, wenyan-lite, wenyan, wenyan-full, wenyan-ultra
 
 Examples:
-  ctx_plugin install              # install both Caveman + Routing
-  ctx_plugin install caveman     # Caveman only
-  ctx_plugin install routing     # Routing only
-  ctx_plugin uninstall caveman   # remove Caveman, keep Routing
-  ctx_plugin status             # show all component statuses
-  ctx_plugin doctor             # run diagnostics
+  ctx_plugin install               # install all (Caveman + Routing + Transform)
+  ctx_plugin install caveman       # Caveman only
+  ctx_plugin install routing       # Routing only
+  ctx_plugin install transform     # Transform (summaries) only
+  ctx_plugin uninstall transform   # remove Transform, keep others
+  ctx_plugin caveman on            # activate caveman with default level
+  ctx_plugin caveman off           # deactivate caveman
+  ctx_plugin caveman ultra         # activate caveman in ultra mode
+  ctx_plugin caveman status        # show current mode
+  ctx_plugin status                # show all component statuses
+  ctx_plugin doctor                # run diagnostics
 
 MCP Servers:
   MCP servers are now in mcps/:
@@ -352,8 +506,26 @@ async function main(): Promise<void> {
   const target = args[1];
 
   switch (command) {
+    case "caveman": {
+      if (!target || target === "status") {
+        cavemanShowStatus()
+      } else if (target === "off" || target === "stop" || target === "disable") {
+        cavemanDeactivate()
+      } else {
+        cavemanActivate(target)
+      }
+      break
+    }
+
     case "install": {
-      if (!target || target === "all" || target === "caveman" || target === "routing") {
+      if (!target || target === "all" || target === "caveman" || target === "routing" || target === "transform") {
+        // Run build-plugins.mjs once, then install requested components
+        const build = ensurePluginsBuilt()
+        if (!build.success) {
+          console.log(build.message)
+          process.exit(1)
+        }
+
         const results: string[] = [];
         if (!target || target === "all" || target === "caveman") {
           const r = installCavemanPlugin();
@@ -365,16 +537,21 @@ async function main(): Promise<void> {
           console.log(r.message);
           if (!r.success) results.push(r.message);
         }
+        if (!target || target === "all" || target === "transform") {
+          const r = installTransformPlugin();
+          console.log(r.message);
+          if (!r.success) results.push(r.message);
+        }
         if (results.length > 0) process.exit(1);
       } else {
         console.log(`Unknown component: ${target}`);
-        console.log(`Available: caveman, routing`);
+        console.log(`Available: caveman, routing, transform`);
       }
       break;
     }
 
     case "uninstall": {
-      if (!target || target === "all" || target === "caveman" || target === "routing") {
+      if (!target || target === "all" || target === "caveman" || target === "routing" || target === "transform") {
         const results: string[] = [];
         if (!target || target === "all" || target === "caveman") {
           const r = uninstallCavemanPlugin();
@@ -383,6 +560,11 @@ async function main(): Promise<void> {
         }
         if (!target || target === "all" || target === "routing") {
           const r = uninstallRoutingPlugin();
+          console.log(r.message);
+          if (!r.success) results.push(r.message);
+        }
+        if (!target || target === "all" || target === "transform") {
+          const r = uninstallTransformPlugin();
           console.log(r.message);
           if (!r.success) results.push(r.message);
         }

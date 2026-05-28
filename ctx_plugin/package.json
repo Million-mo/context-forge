@@ -6,7 +6,7 @@
     "ctx_plugin": "./dist/cli.js"
   },
   "scripts": {
-    "build": "tsc && node bin/build-plugins.mjs",
+    "build": "tsc && node bin/build-plugins.mjs && chmod +x dist/cli.js",
     "build:plugins": "node bin/build-plugins.mjs",
     "typecheck": "tsc --noEmit"
   },

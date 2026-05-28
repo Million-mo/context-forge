@@ -1,18 +1,10 @@
 import { config } from "./config.js"
-
-export interface RecallLLMConfig {
-  provider: "openai" | "anthropic"
-  model: string
-  apiKey: string
-  baseUrl: string
-  maxTokens: number
-  temperature: number
-}
+import type { LLMConfig } from "./config.js"
 
 export class RecallLLMClient {
-  private config: RecallLLMConfig
+  private config: LLMConfig
 
-  constructor(cfg: RecallLLMConfig) {
+  constructor(cfg: LLMConfig) {
     this.config = cfg
   }
 
@@ -68,19 +60,12 @@ export class RecallLLMClient {
 }
 
 export function createRecallLLMClient(): RecallLLMClient | null {
-  const { llm } = config
+  const llm = config.llm
 
-  if (!llm.apiKey && llm.provider === "anthropic") {
-    console.warn("[recall-llm] No apiKey set for anthropic — recall generation disabled")
+  if (!llm.apiKey) {
+    console.warn("[recall-llm] No apiKey set — recall generation disabled")
     return null
   }
 
-  return new RecallLLMClient({
-    provider: llm.provider,
-    model: llm.model,
-    apiKey: llm.apiKey,
-    baseUrl: llm.baseUrl,
-    maxTokens: llm.maxTokens,
-    temperature: llm.temperature,
-  })
+  return new RecallLLMClient(llm)
 }

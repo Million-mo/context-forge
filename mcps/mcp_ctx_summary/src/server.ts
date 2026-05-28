@@ -20,19 +20,11 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { ListToolsRequestSchema, CallToolRequestSchema } from "@modelcontextprotocol/sdk/types.js"
 import { z } from "zod"
 import { existsSync, statSync } from "fs"
-import { resolve } from "path"
 import Database from "better-sqlite3"
 import type { RecallOptions, RecallResult, StoredMessage, SummaryWithSession, TurnSummary } from "@context-forge/shared-types"
 import { buildRecallPrompt } from "./recall-prompts.js"
 import { createRecallLLMClient } from "./llm.js"
-
-function getDataDir(): string {
-  return process.env.DATA_DIR || resolve(process.cwd(), "data")
-}
-
-function getDbPath(): string {
-  return resolve(getDataDir(), "summaries.db")
-}
+import { getDbPath } from "./config.js"
 
 interface SummaryRow {
   turn_index: number
@@ -403,7 +395,7 @@ server.server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
 async function main() {
   console.error("[mcp_ctx_summary] Starting...")
-  console.error(`[mcp_ctx_summary] Data dir: ${getDataDir()}`)
+  console.error(`[mcp_ctx_summary] DB path: ${getDbPath()}`)
   console.error(`[mcp_ctx_summary] Recall LLM: ${recallLLM ? "enabled" : "disabled (no API key)"}`)
   const transport = new StdioServerTransport()
   await server.connect(transport)

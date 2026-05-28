@@ -19,6 +19,7 @@ import { spawnSync } from "node:child_process"
 import { existsSync, mkdirSync, copyFileSync, readFileSync, writeFileSync, readdirSync, rmSync } from "node:fs"
 import { resolve, dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
+import { homedir } from "node:os"
 
 const __filename = fileURLToPath(import.meta.url)
 const ROOT = resolve(dirname(__filename), "..")
@@ -28,7 +29,13 @@ const ROOT = resolve(dirname(__filename), "..")
 const TSC = resolve(ROOT, "node_modules", ".bin", "tsc")
 const TSCCONFIG = resolve(ROOT, "tsconfig.json")
 const DIST_DIR = resolve(ROOT, "dist")
-const PLUGINS_OUT = resolve(ROOT, "..", ".opencode", "plugins")
+
+const OPENCODE_CONFIG_DIR = process.env.OPENCODE_CONFIG_DIR ||
+  (process.env.XDG_CONFIG_HOME && resolve(process.env.XDG_CONFIG_HOME, "opencode")) ||
+  (process.platform === "win32"
+    ? resolve(process.env.APPDATA || resolve(homedir(), "AppData", "Roaming"), "opencode")
+    : resolve(homedir(), ".config", "opencode"))
+const PLUGINS_OUT = resolve(OPENCODE_CONFIG_DIR, "plugins")
 
 const PLUGINS = [
   {

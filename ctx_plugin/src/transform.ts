@@ -19,9 +19,9 @@
 // ─── Imports ─────────────────────────────────────────────────────────────────
 
 import { createHash } from "node:crypto"
-import { resolve, dirname } from "node:path"
-import { fileURLToPath } from "node:url"
-import { mkdirSync, appendFileSync } from "node:fs"
+import { resolve } from "node:path"
+import { homedir } from "node:os"
+import { mkdirSync, appendFileSync, existsSync, readFileSync } from "node:fs"
 import { DatabaseSync } from "node:sqlite"
 
 // ─── Types ─────────────────────────────────────────────────────────────────
@@ -88,13 +88,10 @@ interface SessionStore {
 
 // ─── Config ─────────────────────────────────────────────────────────────────
 
-const __dirname = dirname(fileURLToPath(import.meta.url))
-const WORKSPACE_ROOT = resolve(__dirname, "..", "..")
-
 const DATA_DIR = process.env.TRANSFORM_DATA_DIR
-  || resolve(WORKSPACE_ROOT, "ctx_plugin")
+  || resolve(process.cwd(), ".ctx_plugin", "data")
 
-const LOG_DIR = resolve(DATA_DIR, "..", "..", ".local", "share", "opencode", "log")
+const LOG_DIR = resolve(process.cwd(), ".ctx_plugin", "log")
 const LOG_FILE = resolve(LOG_DIR, "transform.log")
 
 function ensureLogDir() {
@@ -139,12 +136,48 @@ const SESSION_ID = process.env.SESSION_ID || "default"
 
 // ─── LLM Config ─────────────────────────────────────────────────────────────
 
+function getCtxPluginGlobalDir(): string {
+  if (process.env.CTX_PLUGIN_CONFIG_DIR) return process.env.CTX_PLUGIN_CONFIG_DIR
+  if (process.env.XDG_CONFIG_HOME) return resolve(process.env.XDG_CONFIG_HOME, "ctx_plugin")
+  if (process.platform === "win32") {
+    return resolve(process.env.APPDATA || resolve(homedir(), "AppData", "Roaming"), "ctx_plugin")
+  }
+  return resolve(homedir(), ".config", "ctx_plugin")
+}
+
+function loadLLMConfigFromFile(): Partial<typeof LLM_CONFIG> {
+  // Priority: project .ctx_plugin/config.json > project config.json (legacy) > global ~/.ctx_plugin/config.json
+  const candidates = [
+    resolve(process.cwd(), ".ctx_plugin", "config.json"),
+    resolve(process.cwd(), "config.json"),
+    resolve(getCtxPluginGlobalDir(), "config.json"),
+  ]
+  for (const path of candidates) {
+    if (!existsSync(path)) continue
+    try {
+      const cfg = JSON.parse(readFileSync(path, "utf-8"))
+      if (cfg.llm?.apiKey || cfg.apiKey) {
+        return {
+          apiKey: cfg.llm?.apiKey || cfg.apiKey || undefined,
+          baseUrl: cfg.llm?.baseUrl || cfg.baseUrl || undefined,
+          model: cfg.llm?.model || cfg.model || undefined,
+          maxTokens: cfg.llm?.maxTokens || cfg.maxTokens || undefined,
+          temperature: cfg.llm?.temperature || cfg.temperature || undefined,
+        }
+      }
+    } catch { /* try next */ }
+  }
+  return {}
+}
+
+const _fileConfig = loadLLMConfigFromFile()
+
 const LLM_CONFIG = {
-  apiKey: process.env.CONTEXT_FORGE_LLM_API_KEY || process.env.TRANSFORM_LLM_API_KEY || "placeholder",
-  baseUrl: process.env.CONTEXT_FORGE_LLM_BASE_URL || process.env.TRANSFORM_LLM_BASE_URL || "http://116.204.104.177:8123",
-  model: process.env.CONTEXT_FORGE_LLM_MODEL || process.env.TRANSFORM_LLM_MODEL || "GLM-4.7",
-  maxTokens: 2048,
-  temperature: 0.3,
+  apiKey: process.env.CONTEXT_FORGE_LLM_API_KEY || process.env.TRANSFORM_LLM_API_KEY || _fileConfig.apiKey || "placeholder",
+  baseUrl: process.env.CONTEXT_FORGE_LLM_BASE_URL || process.env.TRANSFORM_LLM_BASE_URL || _fileConfig.baseUrl || "http://116.204.104.177:8123",
+  model: process.env.CONTEXT_FORGE_LLM_MODEL || process.env.TRANSFORM_LLM_MODEL || _fileConfig.model || "GLM-4.7",
+  maxTokens: _fileConfig.maxTokens ?? 2048,
+  temperature: _fileConfig.temperature ?? 0.3,
 }
 
 function validateLLMConfig(): void {

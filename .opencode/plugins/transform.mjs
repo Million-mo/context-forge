@@ -7,16 +7,14 @@
 
 // ─── Imports ─────────────────────────────────────────────────────────────────
 import { createHash } from "node:crypto";
-import { resolve, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
-import { mkdirSync, appendFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { homedir } from "node:os";
+import { mkdirSync, appendFileSync, existsSync, readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 // ─── Config ─────────────────────────────────────────────────────────────────
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const WORKSPACE_ROOT = resolve(__dirname, "..", "..");
 const DATA_DIR = process.env.TRANSFORM_DATA_DIR
-    || resolve(WORKSPACE_ROOT, "ctx_plugin");
-const LOG_DIR = resolve(DATA_DIR, "..", "..", ".local", "share", "opencode", "log");
+    || resolve(process.cwd(), ".ctx_plugin", "data");
+const LOG_DIR = resolve(process.cwd(), ".ctx_plugin", "log");
 const LOG_FILE = resolve(LOG_DIR, "transform.log");
 function ensureLogDir() {
     try {
@@ -60,20 +58,61 @@ const CACHEABLE_TOOLS = new Set([
 ]);
 const SESSION_ID = process.env.SESSION_ID || "default";
 // ─── LLM Config ─────────────────────────────────────────────────────────────
+function getCtxPluginGlobalDir() {
+    if (process.env.CTX_PLUGIN_CONFIG_DIR)
+        return process.env.CTX_PLUGIN_CONFIG_DIR;
+    if (process.env.XDG_CONFIG_HOME)
+        return resolve(process.env.XDG_CONFIG_HOME, "ctx_plugin");
+    if (process.platform === "win32") {
+        return resolve(process.env.APPDATA || resolve(homedir(), "AppData", "Roaming"), "ctx_plugin");
+    }
+    return resolve(homedir(), ".config", "ctx_plugin");
+}
+function loadLLMConfigFromFile() {
+    const candidates = [
+        resolve(process.cwd(), ".ctx_plugin", "config.json"),
+        resolve(process.cwd(), "config.json"),
+        resolve(getCtxPluginGlobalDir(), "config.json"),
+    ];
+    for (const path of candidates) {
+        if (!existsSync(path))
+            continue;
+        try {
+            const cfg = JSON.parse(readFileSync(path, "utf8"));
+            if (cfg.llm?.apiKey || cfg.apiKey) {
+                return {
+                    apiKey: cfg.llm?.apiKey || cfg.apiKey || undefined,
+                    baseUrl: cfg.llm?.baseUrl || cfg.baseUrl || undefined,
+                    model: cfg.llm?.model || cfg.model || undefined,
+                    maxTokens: cfg.llm?.maxTokens || cfg.maxTokens || undefined,
+                    temperature: cfg.llm?.temperature || cfg.temperature || undefined,
+                };
+            }
+        }
+        catch { }
+    }
+    return {};
+}
+const _fileConfig = loadLLMConfigFromFile();
 const LLM_CONFIG = {
-    apiKey: process.env.TRANSFORM_LLM_API_KEY || "placeholder",
-    baseUrl: process.env.TRANSFORM_LLM_BASE_URL || "http://116.204.104.177:8123",
-    model: process.env.TRANSFORM_LLM_MODEL || "GLM-4.7",
-    maxTokens: 2048,
-    temperature: 0.3,
+    apiKey: process.env.CONTEXT_FORGE_LLM_API_KEY || process.env.TRANSFORM_LLM_API_KEY || _fileConfig.apiKey || "placeholder",
+    baseUrl: process.env.CONTEXT_FORGE_LLM_BASE_URL || process.env.TRANSFORM_LLM_BASE_URL || _fileConfig.baseUrl || "http://116.204.104.177:8123",
+    model: process.env.CONTEXT_FORGE_LLM_MODEL || process.env.TRANSFORM_LLM_MODEL || _fileConfig.model || "GLM-4.7",
+    maxTokens: _fileConfig.maxTokens ?? 2048,
+    temperature: _fileConfig.temperature ?? 0.3,
 };
 function validateLLMConfig() {
     if (LLM_CONFIG.apiKey === "placeholder") {
         log.warn("LLM summarization DISABLED (no API key configured)");
-        log.warn("Set TRANSFORM_LLM_API_KEY + TRANSFORM_LLM_BASE_URL to enable turn summaries");
+        log.warn("Set CONTEXT_FORGE_LLM_API_KEY (+ CONTEXT_FORGE_LLM_BASE_URL) to enable turn summaries");
     }
 }
 // ─── SQLite Store ────────────────────────────────────────────────────────────
+/**
+ * ⚠️ Keep in sync with @context-forge/shared-types/schema.
+ * This is a copy because transform.ts runs  opencode plugin
+ * and cannot import from the npm workspace at runtime.
+ */
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS global_summary_cache (
   content_hash TEXT NOT NULL PRIMARY KEY,
@@ -318,7 +357,7 @@ const SUMMARY_USER_PROMPT = `请为以下对话轮次生成摘要：
   "errors": ["错误描述"],
   "todos": ["未完成事项"],
   "confidence": 0.0-1.0,
-  "reason": "当 outcome=success 或 confidence<0.7 时的解释"
+  "reason": "当 outcome!=success 或 confidence<0.7 时的解释"
 }`;
 function serializeMessages(messages) {
     const lines = [];
@@ -776,7 +815,7 @@ function updateToolOutputIndex(messages, toolOutputs) {
                 const entry = toolOutputs.get(key);
                 entry.lastSeenTurnIdx = Math.floor(i / 10);
                 entry.callCount++;
-                if (entry.output == output)
+                if (entry.output !== output)
                     entry.output = output;
             }
             else {
@@ -811,7 +850,7 @@ function syncSession(sessionId, messages) {
     store.turns = splitIntoTurns(messages);
     const completedTurns = store.turns.filter((t) => !t.isCurrent);
     for (const turn of completedTurns) {
-        if (turn.summaryStatus == "pending")
+        if (turn.summaryStatus !== "pending")
             continue;
         const cached = getStore().getByHash(turn.contentHash);
         if (cached) {
@@ -844,7 +883,7 @@ async function triggerAsyncSummary(sessionId, turn) {
         }
         for (const [, s] of sessions) {
             const t = s.turns.find((x) => x.index === turn.index && !x.isCurrent && x.contentHash === turn.contentHash);
-            if (t && t == turn) {
+            if (t && t !== turn) {
                 t.summary = summary || t.summary;
                 t.summaryStatus = summary ? "done" : "unavailable";
             }
@@ -901,7 +940,7 @@ export const TransformPlugin = () => ({
         output.messages.splice(0, output.messages.length, ...compressed);
         // Step 2: Inject history context if needed
         const lastMsg = messages[messages.length - 1];
-        if (!lastMsg || getRole(lastMsg) == "user")
+        if (!lastMsg || getRole(lastMsg) !== "user")
             return;
         const query = detectHistoryQuery(lastMsg.parts || []);
         if (!query)

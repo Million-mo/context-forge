@@ -1,3 +1,28 @@
+// ─── Paths ────────────────────────────────────────────────────────────────────
+
+export {
+  getGlobalConfigDir,
+  getGlobalDataDir,
+  getOpenCodePluginsDir,
+  getProjectConfigDir,
+  getProjectDataDir,
+  getGlobalConfigPath,
+  getProjectConfigPath,
+  getCavemanFlagPath,
+  getSummariesDbPath,
+  getContentDbPath,
+  getSessionsDir,
+} from "./paths.js"
+
+// ─── Config ───────────────────────────────────────────────────────────────────
+
+export {
+  loadConfig,
+  loadLLMConfig,
+  loadCavemanConfig,
+} from "./config.js"
+export type { LLMConfig, CavemanConfig, AppConfig } from "./config.js"
+
 // ─── Core Types ───────────────────────────────────────────────────────────────
 
 export type OutcomeType = "success" | "partial" | "failure" | "unknown"

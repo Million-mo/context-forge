@@ -1,11 +1,13 @@
 {
   "llm": {
     "provider": "openai",
-    "model": "glm-4-flash",
+    "model": "GLM-4.7",
     "apiKey": "",
-    "baseUrl": "http://localhost:8080",
+    "baseUrl": "http://116.204.104.177:8123",
     "maxTokens": 2048,
     "temperature": 0.3
   },
-  "dataDir": "./data"
+  "caveman": {
+    "defaultMode": "full"
+  }
 }
