@@ -1,6 +1,6 @@
 # context_forge
 
-A workspace for building, experimenting with, and composing AI coding assistant plugins. Currently focused on the `ctx_plugin` system — a unified opencode plugin that brings three capabilities together.
+A workspace for building, experimenting with, and composing AI coding assistant plugins.
 
 ---
 
@@ -8,13 +8,11 @@ A workspace for building, experimenting with, and composing AI coding assistant 
 
 ### ctx_plugin
 
-The core project. A unified opencode plugin combining:
+A unified opencode plugin combining:
 
 - **RTK** — intercepts `bash`/`shell` tool calls and rewrites commands via `rtk rewrite` before execution
 - **Caveman** — ultra-compressed communication mode with session-level persistence across six intensity levels, from casual tight prose to 文言文 classical Chinese
-- **MCP Server** — sandboxed polyglot code execution (11 languages) + FTS5 full-text search with BM25 + trigram RRF fusion
-
-It also ships a SQLite-backed session event store, a layered security policy engine (deny/allow patterns + shell-escape scanning), and per-session guidance throttling.
+- **Security** — layered policy engine (deny/allow patterns + shell-escape scanning)
 
 See [ctx_plugin/README.md](ctx_plugin/README.md) for full details.
 
@@ -39,31 +37,60 @@ Located under `ctx_plugin/skills/`:
 
 Located under `mcps/`:
 
-| Package | Description |
-|---------|-------------|
-| `mcp_ctx_tool` | Sandboxed code execution (11 languages) + FTS5 content indexing/search |
-| `mcp_ctx_summary` | Intent-driven recall + FTS search over session summaries |
+| Package | Tools | Description |
+|---------|-------|-------------|
+| `mcp_ctx_tool` | 10 tools | 沙箱多语言代码执行 + FTS5 内容索引/搜索 |
+| `mcp_ctx_summary` | 6 tools | 会话摘要召回 + 全局 FTS 搜索 |
 
-Both are registered into `opencode.json` via their respective `install.js` scripts.
+### mcp_ctx_tool
+
+| Tool | Description |
+|------|-------------|
+| `ctx_ping` | 健康检查 |
+| `ctx_execute` | 沙箱执行代码（11 种语言，100MB 输出上限） |
+| `ctx_runtimes` | 列出可用运行时及版本 |
+| `ctx_index` | 将文件或文本索引到 FTS5 存储 |
+| `ctx_search` | BM25 + trigram RRF 融合搜索 |
+| `ctx_stats` | 存储统计信息 |
+| `ctx_execute_file` | 执行脚本文件 |
+| `ctx_batch_execute` | 批量顺序/并行执行 |
+| `ctx_fetch_and_index` | 抓取网页内容并索引 |
+| `ctx_purge` | 清理会话数据 |
+
+**支持语言：** `javascript`, `typescript`, `python`, `shell`, `ruby`, `go`, `rust`, `php`, `perl`, `r`, `elixir`
+
+### mcp_ctx_summary
+
+| Tool | Description |
+|------|-------------|
+| `summary_recall` | 意图驱动的召回（通过 LLM 生成） |
+| `summary_search` | 全局 FTS 全文搜索摘要 |
+| `summary_list` | 列出某会话的所有摘要 |
+| `summary_get` | 按会话 ID 和轮次获取单个摘要 |
+| `summary_messages` | 获取某轮次的原始消息 |
+| `summary_health` | 健康检查 + DB 统计 |
 
 ---
 
 ## Quick Start
 
 ```bash
-# Build all MCP packages
-cd mcps/mcp_ctx_tool && npm install && npm run build
-cd mcps/mcp_ctx_summary && npm install && npm run build
+# 1. 安装依赖并构建
+cd mcps/mcp_ctx_tool
+npm install && npm run build
+cd ../mcp_ctx_summary
+npm install && npm run build
+cd ../..
 
-# Install both MCP servers into opencode.json
+# 2. 注册到 opencode.json
 npx tsx scripts/install-all.ts
 
-# Or individually
+# 或分别安装
 node mcps/mcp_ctx_tool/dist/install.js
 node mcps/mcp_ctx_summary/dist/install.js
-```
 
-Restart opencode after installation.
+# 3. 重启 opencode
+```
 
 ---
 
@@ -71,42 +98,44 @@ Restart opencode after installation.
 
 ```
 context_forge/
-├── README.md                  # This file
-├── .opencode/                 # opencode workspace config
-├── mcps/                     # MCP server packages
-│   ├── mcp_ctx_tool/         # Code execution + FTS5 search
+├── README.md
+├── mcps/                          # MCP 服务器包
+│   ├── mcp_ctx_tool/              # 代码执行 + FTS5 搜索
 │   │   └── src/
-│   │       ├── server.ts      # MCP stdio server
-│   │       ├── executor.ts    # PolyglotExecutor (sandbox code execution)
-│   │       ├── runtime.ts     # Runtime detection
-│   │       ├── store.ts       # FTS5 BM25 + trigram RRF search
-│   │       ├── session-db.ts   # SQLite session event store
-│   │       └── db-base.ts     # SQLite base wrapper
-│   ├── mcp_ctx_summary/      # Context summary + recall
+│   │       ├── server.ts           # MCP stdio 服务端
+│   │       ├── executor.ts         # PolyglotExecutor 沙箱执行器
+│   │       ├── runtime.ts         # 运行时检测（11 种语言）
+│   │       ├── store.ts           # FTS5 BM25 + trigram RRF 搜索
+│   │       ├── session-db.ts      # SQLite 会话事件存储
+│   │       ├── db-base.ts         # SQLite 基础封装
+│   │       ├── install.ts         # 注册到 opencode.json
+│   │       └── types.ts
+│   ├── mcp_ctx_summary/           # 上下文摘要 + 召回
 │   │   └── src/
-│   │       ├── server.ts      # MCP stdio server
-│   │       ├── llm.ts         # Recall LLM client
-│   │       └── recall-prompts.ts
-│   └── shared-types/         # Shared TypeScript types
-├── ctx_plugin/               # Core opencode plugin
-│   ├── README.md              # Full plugin documentation
+│   │       ├── server.ts          # MCP stdio 服务端
+│   │       ├── llm.ts             # 召回 LLM 客户端
+│   │       ├── recall-prompts.ts  # 召回提示词
+│   │       ├── install.ts         # 注册到 opencode.json
+│   │       └── types.ts
+│   └── shared-types/              # 共享 TypeScript 类型
+├── ctx_plugin/                    # opencode 插件（RTK + Caveman）
 │   ├── src/
-│   │   ├── plugin.ts          # opencode plugin (RTK + Caveman hooks)
-│   │   ├── cli.ts            # Install/uninstall/status CLI
-│   │   ├── security.ts       # Policy engine + shell-escape scanner
+│   │   ├── plugin.ts             # opencode 插件入口
+│   │   ├── cli.ts                # install/status CLI
+│   │   ├── security.ts           # 策略引擎 + shell-escape 扫描
 │   │   └── hooks/
-│   │       ├── routing.ts     # Tool routing decisions
-│   │       ├── guidance.ts   # Per-session guidance throttle
-│   │       └── tool-naming.ts
+│   │       ├── routing.ts         # 工具路由决策
+│   │       ├── guidance.ts        # 会话级引导节流
+│   │       └── tool-naming.ts     # 工具名标准化
 │   └── skills/
-│       ├── caveman/          # Six intensity levels
-│       ├── cavecrew/         # Subagent delegation guide
+│       ├── caveman/              # 6 档压缩强度
+│       ├── cavecrew/              # 子 agent 决策
 │       ├── caveman-commit/
 │       ├── caveman-review/
 │       ├── caveman-compress/
 │       └── caveman-help/
 └── scripts/
-    └── install-all.ts         # One-shot MCP installer
+    └── install-all.ts            # 一键安装两个 MCP
 ```
 
 ---
@@ -154,8 +183,8 @@ context_forge/
 
 | Variable | Purpose |
 |----------|---------|
-| `CTX_PLUGIN_REQUIRE_SECURITY` | `1` = fail-closed on policy match |
-| `CTX_PLUGIN_DATA_DIR` | Override session DB base directory |
-| `CTX_PLUGIN_VERBOSE` | `1` = emit debug logs |
-| `CAVEMAN_DEFAULT_MODE` | Default caveman level (`full`, `ultra`, `wenyan`, etc.) |
-| `OPENCODE_CONFIG_DIR` | Override opencode config directory |
+| `CTX_PLUGIN_REQUIRE_SECURITY` | `1` = 策略匹配时 fail-closed |
+| `CTX_PLUGIN_DATA_DIR` | 覆盖会话 DB 基目录 |
+| `CTX_PLUGIN_VERBOSE` | `1` = 输出调试日志 |
+| `CAVEMAN_DEFAULT_MODE` | 默认压缩级别（`full`, `ultra`, `wenyan` 等） |
+| `OPENCODE_CONFIG_DIR` | 覆盖 opencode 配置目录 |
