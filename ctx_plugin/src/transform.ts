@@ -145,7 +145,7 @@ function getCtxPluginGlobalDir(): string {
   return resolve(homedir(), ".config", "ctx_plugin")
 }
 
-function loadLLMConfigFromFile(): Partial<typeof LLM_CONFIG> {
+function loadLLMConfigFromFile() {
   // Priority: project .ctx_plugin/config.json > project config.json (legacy) > global ~/.ctx_plugin/config.json
   const candidates = [
     resolve(process.cwd(), ".ctx_plugin", "config.json"),
