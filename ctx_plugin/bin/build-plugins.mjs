@@ -37,6 +37,8 @@ const PLUGINS = [
     distJs: join(DIST_DIR, "caveman.js"),
     outMjs: join(PLUGINS_OUT, "caveman.mjs"),
     srcName: "ctx_plugin/src/caveman.ts",
+    // Caveman only imports node:* modules, no project deps needed
+    deps: [],
   },
   {
     name: "routing",
@@ -44,6 +46,11 @@ const PLUGINS = [
     distJs: join(DIST_DIR, "routing-plugin.js"),
     outMjs: join(PLUGINS_OUT, "routing.mjs"),
     srcName: "ctx_plugin/src/routing-plugin.ts",
+    // Routing imports from hooks/ and security.ts — copy these alongside
+    deps: [
+      { src: join(DIST_DIR, "security.js"),       dst: join(PLUGINS_OUT, "security.js") },
+      { src: join(DIST_DIR, "hooks"),             dst: join(PLUGINS_OUT, "hooks") },
+    ],
   },
 ]
 
@@ -132,6 +139,48 @@ for (const plugin of PLUGINS) {
 
   writeFileSync(plugin.outMjs, code, "utf8")
   console.log(`  ✓ ${plugin.name}.mjs → ${resolve(PLUGINS_OUT, plugin.name + ".mjs").replace(resolve(ROOT, "..") + "/", "")}`)
+}
+
+// ── Step 3: Copy dependency modules for standalone plugin resolution ──────────
+
+for (const plugin of PLUGINS) {
+  if (!plugin.deps || plugin.deps.length === 0) continue
+
+  for (const dep of plugin.deps) {
+    if (!existsSync(dep.src)) {
+      console.error(`  ⚠ dep not found: ${dep.src}`)
+      continue
+    }
+
+    const dstParent = dirname(dep.dst)
+    if (!existsSync(dstParent)) {
+      mkdirSync(dstParent, { recursive: true })
+    }
+
+    if (dep.src.endsWith(".js")) {
+      // Single file copy (skip if already exists — tsc output is up to date)
+      if (!existsSync(dep.dst)) {
+        copyFileSync(dep.src, dep.dst)
+        const shortName = dep.dst.replace(resolve(ROOT, "..") + "/", "")
+        console.log(`  ✓ dep ${shortName}`)
+      }
+    } else {
+      // Directory copy — copy all .js files
+      if (!existsSync(dep.dst)) {
+        mkdirSync(dep.dst, { recursive: true })
+      }
+      const entries = readdirSync(dep.src)
+      for (const entry of entries) {
+        const srcPath = join(dep.src, entry)
+        const dstPath = join(dep.dst, entry)
+        if (entry.endsWith(".js") && !existsSync(dstPath)) {
+          copyFileSync(srcPath, dstPath)
+          const shortName = dstPath.replace(resolve(ROOT, "..") + "/", "")
+          console.log(`  ✓ dep ${shortName}`)
+        }
+      }
+    }
+  }
 }
 
 console.log("\nDone. Restart opencode to use updated plugins.")
