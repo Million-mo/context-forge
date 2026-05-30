@@ -333,7 +333,7 @@ server.registerTool(
 
 server.server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
-    { name: "ctx_ping", description: "Health check for mcp_ctx_tool", inputSchema: { type: "object", properties: {} } },
+    { name: "ctx_ping", description: "Health check for mcp_ctx_tool", inputSchema: { type: "object", properties: {} }, annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } },
     {
       name: "ctx_execute",
       description: "Execute code in sandbox with multiple language support",
@@ -346,8 +346,9 @@ server.server.setRequestHandler(ListToolsRequestSchema, async () => ({
         },
         required: ["language", "code"],
       },
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
     },
-    { name: "ctx_runtimes", description: "List available language runtimes", inputSchema: { type: "object", properties: {} } },
+    { name: "ctx_runtimes", description: "List available language runtimes", inputSchema: { type: "object", properties: {} }, annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } },
     {
       name: "ctx_index",
       description: "Index file or content into searchable store",
@@ -355,6 +356,7 @@ server.server.setRequestHandler(ListToolsRequestSchema, async () => ({
         type: "object",
         properties: { content: { type: "string" }, path: { type: "string" }, source: { type: "string" } },
       },
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
     },
     {
       name: "ctx_search",
@@ -364,8 +366,9 @@ server.server.setRequestHandler(ListToolsRequestSchema, async () => ({
         properties: { query: { type: "string" }, limit: { type: "number" }, source: { type: "string" }, contentType: { type: "string", enum: ["code", "prose"] } },
         required: ["query"],
       },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
-    { name: "ctx_stats", description: "Get content store statistics", inputSchema: { type: "object", properties: {} } },
+    { name: "ctx_stats", description: "Get content store statistics", inputSchema: { type: "object", properties: {} }, annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } },
     {
       name: "ctx_execute_file",
       description: "Read and execute a script file with sandboxed environment",
@@ -374,6 +377,7 @@ server.server.setRequestHandler(ListToolsRequestSchema, async () => ({
         properties: { path: { type: "string" }, args: { type: "array", items: { type: "string" } }, env: { type: "object", additionalProperties: { type: "string" } }, timeout: { type: "number" } },
         required: ["path"],
       },
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
     },
     {
       name: "ctx_batch_execute",
@@ -387,13 +391,15 @@ server.server.setRequestHandler(ListToolsRequestSchema, async () => ({
         },
         required: ["commands"],
       },
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
     },
-    { name: "ctx_fetch_and_index", description: "Fetch web content and index it for search", inputSchema: { type: "object", properties: { url: { type: "string" }, source: { type: "string" } }, required: ["url"] } },
-    { name: "ctx_doctor", description: "Run system diagnostics", inputSchema: { type: "object", properties: {} } },
+    { name: "ctx_fetch_and_index", description: "Fetch web content and index it for search", inputSchema: { type: "object", properties: { url: { type: "string" }, source: { type: "string" } }, required: ["url"] }, annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true } },
+    { name: "ctx_doctor", description: "Run system diagnostics", inputSchema: { type: "object", properties: {} }, annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } },
     {
       name: "ctx_purge",
       description: "Clear session data from the SQLite store",
       inputSchema: { type: "object", properties: { sessionId: { type: "string" }, daysOld: { type: "number" } } },
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
     },
   ],
 }));

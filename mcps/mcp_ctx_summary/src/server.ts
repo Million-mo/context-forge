@@ -321,31 +321,37 @@ server.server.setRequestHandler(ListToolsRequestSchema, async () => ({
       name: "summary_recall",
       description: "Intent-driven recall that retrieves relevant historical information. Uses LLM to generate context-aware recall based on a natural language query.",
       inputSchema: { type: "object", properties: { query: { type: "string", description: "Natural language query for recall" }, sessionId: { type: "string", description: "Filter by session ID" }, limit: { type: "number", description: "Max results to return", default: 3 } }, required: ["query"] },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     },
     {
       name: "summary_search",
       description: "Full-text search across all turn summaries.",
       inputSchema: { type: "object", properties: { query: { type: "string" }, limit: { type: "number", default: 5 }, sessionId: { type: "string" } }, required: ["query"] },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
     {
       name: "summary_list",
       description: "List all summaries for a specific session in turn order",
       inputSchema: { type: "object", properties: { sessionId: { type: "string" } }, required: ["sessionId"] },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
     {
       name: "summary_get",
       description: "Get a single turn summary by session ID and turn index",
       inputSchema: { type: "object", properties: { sessionId: { type: "string" }, turnIndex: { type: "number" } }, required: ["sessionId", "turnIndex"] },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
     {
       name: "summary_messages",
       description: "Get raw messages for a specific turn",
       inputSchema: { type: "object", properties: { sessionId: { type: "string" }, turnIndex: { type: "number" } }, required: ["sessionId", "turnIndex"] },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
     {
       name: "summary_health",
       description: "Health check and database statistics",
       inputSchema: { type: "object", properties: {} },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
   ],
 }))

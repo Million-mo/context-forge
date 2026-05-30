@@ -379,7 +379,27 @@ export class PolyglotExecutor {
   }): Promise<ExecResult> {
     const { path: filePath, args = [], env = {}, timeout } = opts;
 
-    if (!existsSync(filePath)) {
+    // Path traversal protection: resolve against project root, reject escapes.
+    const resolvedPath = resolve(filePath.startsWith("/") || (isWin && /^[A-Z]:\\/i.test(filePath)) ? filePath : resolve(this.#projectRoot, filePath));
+    if (resolvedPath.includes("..")) {
+      return {
+        stdout: "",
+        stderr: `Path traversal blocked: "${filePath}" contains parent directory references`,
+        exitCode: 1,
+        timedOut: false,
+      };
+    }
+    const normalizedRoot = resolve(this.#projectRoot);
+    if (!resolvedPath.startsWith(normalizedRoot + (isWin ? "\\" : "/")) && resolvedPath !== normalizedRoot) {
+      return {
+        stdout: "",
+        stderr: `Path traversal blocked: "${filePath}" resolves outside project root`,
+        exitCode: 1,
+        timedOut: false,
+      };
+    }
+
+    if (!existsSync(resolvedPath)) {
       return {
         stdout: "",
         stderr: `File not found: ${filePath}`,
@@ -388,7 +408,7 @@ export class PolyglotExecutor {
       };
     }
 
-    const rawContent = readFileSync(filePath, { encoding: "utf-8", flag: "r" });
+    const rawContent = readFileSync(resolvedPath, { encoding: "utf-8", flag: "r" });
     const shebang = rawContent.split("\n")[0];
     let language: Language = "shell";
 
@@ -404,7 +424,7 @@ export class PolyglotExecutor {
     }
 
     if (language === "shell") {
-      const ext = filePath.split(".").pop()?.toLowerCase();
+      const ext = resolvedPath.split(".").pop()?.toLowerCase();
       const extMap: Record<string, Language> = {
         js: "javascript", mjs: "javascript", cjs: "javascript",
         ts: "typescript", mts: "typescript",
@@ -421,7 +441,7 @@ export class PolyglotExecutor {
       if (ext && extMap[ext]) language = extMap[ext];
     }
 
-    const cmd = buildCommand(this.#runtimes, language, filePath);
+    const cmd = buildCommand(this.#runtimes, language, resolvedPath);
     if (cmd[0] !== "__rust_compile_run__" && args.length > 0) {
       cmd.push(...args);
     }
@@ -431,7 +451,7 @@ export class PolyglotExecutor {
 
     try {
       if (cmd[0] === "__rust_compile_run__") {
-        return await this.#compileAndRun(filePath, tmpDir, timeout);
+        return await this.#compileAndRun(resolvedPath, tmpDir, timeout);
       }
 
       const cwd = language === "shell" ? this.#projectRoot : tmpDir;

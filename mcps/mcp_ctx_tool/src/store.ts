@@ -275,6 +275,14 @@ export class ContentStore {
     const sanitized = sanitizeQuery(query);
     const { source, contentType } = opts ?? {};
 
+    // Build filter clauses with parameterized values (source/contentType).
+    // FTS5 MATCH requires literal values — kept as sanitized interpolation.
+    const filters: string[] = [];
+    const params: string[] = [];
+    if (source) { filters.push("AND source_label = ?"); params.push(source); }
+    if (contentType) { filters.push("AND content_type = ?"); params.push(contentType); }
+    const filterClause = filters.join(" ");
+
     try {
       const sql = `
         WITH porter_results AS (
@@ -283,8 +291,7 @@ export class ContentStore {
                  row_number() OVER (ORDER BY bm25(chunks, '${sanitized}', 10.0)) as porter_rank
           FROM chunks
           WHERE chunks MATCH '${sanitized}'
-          ${source ? `AND source_label = '${source.replace(/'/g, "''")}'` : ""}
-          ${contentType ? `AND content_type = '${contentType}'` : ""}
+          ${filterClause}
         ),
         trigram_results AS (
           SELECT title, content, source_label, content_type,
@@ -292,8 +299,7 @@ export class ContentStore {
                  row_number() OVER (ORDER BY bm25(chunks_trigram, '${sanitized}', 10.0)) as trigram_rank
           FROM chunks_trigram
           WHERE chunks_trigram MATCH '${sanitized}'
-          ${source ? `AND source_label = '${source.replace(/'/g, "''")}'` : ""}
-          ${contentType ? `AND content_type = '${contentType}'` : ""}
+          ${filterClause}
         )
         SELECT
           p.title,
@@ -306,10 +312,11 @@ export class ContentStore {
         FROM porter_results p
         LEFT JOIN trigram_results t ON p.content = t.content
         ORDER BY rrf_score DESC
-        LIMIT ${limit}
+        LIMIT ?
       `;
 
-      const results = this.#db.prepare(sql).all() as Array<{
+      params.push(String(limit));
+      const results = this.#db.prepare(sql).all(...params) as Array<{
         title: string;
         content: string;
         source: string;
@@ -336,21 +343,23 @@ export class ContentStore {
     const tokens = query.toLowerCase().split(/\s+/).filter((t) => t.length > 2);
     if (tokens.length === 0) return [];
 
-    const conditions = tokens.map((t) => `content LIKE '%${t.replace(/'/g, "''")}%'`);
+    const conditions = tokens.map(() => `content LIKE '%' || ? || '%'`);
     const whereClause = conditions.join(" AND ");
+    const params: string[] = [...tokens];
 
-    const sql = `
+    let sql = `
       SELECT title, content, source_label as source, content_type as contentType,
              LENGTH(content) as relevance
       FROM chunks
-      WHERE ${whereClause}
-      ${opts?.source ? `AND source_label = '${opts.source.replace(/'/g, "''")}'` : ""}
-      ${opts?.contentType ? `AND content_type = '${opts.contentType}'` : ""}
-      ORDER BY relevance DESC
-      LIMIT ${limit}
-    `;
+      WHERE ${whereClause}`;
 
-    const results = this.#db.prepare(sql).all() as Array<{
+    if (opts?.source) { sql += ` AND source_label = ?`; params.push(opts.source); }
+    if (opts?.contentType) { sql += ` AND content_type = ?`; params.push(opts.contentType); }
+
+    sql += ` ORDER BY relevance DESC LIMIT ?`;
+    params.push(String(limit));
+
+    const results = this.#db.prepare(sql).all(...params) as Array<{
       title: string;
       content: string;
       source: string;
