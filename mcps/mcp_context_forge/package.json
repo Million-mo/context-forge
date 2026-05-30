@@ -8,10 +8,10 @@
   },
   "scripts": {
     "dev": "tsx watch src/server.ts",
-    "start": "tsx src/server.ts",
+    "start": "node dist/server.js",
     "build": "tsc",
     "typecheck": "tsc --noEmit",
-    "build:start": "npm run build && node dist/server.js"
+    "build:start": "npm run build:server && node dist/server.js"
   },
   "dependencies": {
     "@context-forge/shared-types": "file:../shared-types",

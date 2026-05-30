@@ -21,50 +21,50 @@ const ROOT = path.resolve(import.meta.dirname, "..");
 const MCP_CXT = path.join(ROOT, "mcps", "mcp_context_forge");
 const DIST_DIR = path.join(MCP_CXT, "dist");
 
-// Files to delete before bundling
-const CLEAN_PATTERNS = [
-  "mcps/mcp_ctx_tool/src/**/*.js",
-  "mcps/mcp_ctx_tool/src/**/*.d.ts",
-  "mcps/mcp_ctx_summary/src/**/*.js",
-  "mcps/mcp_ctx_summary/src/**/*.d.ts",
-];
-
-function clean(pattern) {
-  const base = pattern.replace("/**/*", "");
-  if (!fs.existsSync(base)) return;
-  const files = fs.readdirSync(base, { withFileTypes: true });
-  for (const entry of files) {
-    const full = path.join(base, entry.name);
+function cleanDir(dir) {
+  if (!fs.existsSync(dir)) return;
+  const entries = fs.readdirSync(dir, { withFileTypes: true });
+  for (const entry of entries) {
+    const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
-      clean(path.join(full, "**/*"));
-    } else if (full.endsWith(".js") || full.endsWith(".d.ts")) {
+      cleanDir(full);
+    } else if (entry.name.endsWith(".js") || entry.name.endsWith(".d.ts")) {
       fs.unlinkSync(full);
     }
   }
 }
 
 console.log("[build-server] Cleaning stale CJS/d.ts files...");
-for (const p of CLEAN_PATTERNS) {
-  clean(p);
-}
+cleanDir(path.join(ROOT, "mcps", "mcp_ctx_tool", "src"));
+cleanDir(path.join(ROOT, "mcps", "mcp_ctx_summary", "src"));
+console.log("[build-server] Clean complete.");
 
 // esbuild bundle
 console.log("[build-server] Bundling server with esbuild...");
-await esbuild.build({
-  entryPoints: [path.join(MCP_CXT, "src", "server.ts")],
-  bundle: true,
-  platform: "node",
-  format: "esm",
-  outdir: DIST_DIR,
-  splitting: false,
-  minify: false,
-  sourcemap: false,
-  target: "node22",
-  external: [
-    "@modelcontextprotocol/sdk",
-    "@context-forge/shared-types",
-  ],
-  logLevel: "info",
-});
+const entryPoints = [
+  path.join(MCP_CXT, "src", "server.ts"),
+  path.join(MCP_CXT, "src", "install.ts"),
+];
+
+for (const entry of entryPoints) {
+  const name = path.basename(entry, ".ts");
+  console.log(`  Bundling ${name}...`);
+  await esbuild.build({
+    entryPoints: [entry],
+    bundle: true,
+    platform: "node",
+    format: "esm",
+    outdir: DIST_DIR,
+    splitting: false,
+    minify: false,
+    sourcemap: false,
+    target: "node22",
+    external: [
+      "@modelcontextprotocol/sdk",
+      "@context-forge/shared-types",
+    ],
+    logLevel: "info",
+  });
+}
 
 console.log("[build-server] Done — output:", path.join(DIST_DIR, "server.js"));

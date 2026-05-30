@@ -74,16 +74,20 @@ A single unified MCP server — `mcp_context_forge` — combines execution, cont
 ## Quick Start
 
 ```bash
-# 1. 安装依赖并构建
-cd mcps/mcp_context_forge
-npm install && npm run build
-cd ../..
+# 1. 构建 MCP 服务器
+cd mcps/mcp_context_forge && npm install && npm run build && cd ../..
 
-# 2. 注册到 opencode.json
+# 2. 一键安装 MCP + 交互式配置 LLM（推荐）
 npx tsx scripts/install-all.ts
 
-# 3. 重启 opencode
+# 3. 按提示选择 LLM 提供商并输入 API Key（用于生成摘要）
+
+# 4. 重启 opencode
 ```
+
+> **重要：LLM 配置是摘要生成的前提。** 安装脚本会检测是否有已有配置或环境变量，
+> 如果都没有，会引导你配置。也可跳过：<br>
+> `npx tsx scripts/install-all.ts --skip-config`
 
 ---
 
@@ -153,7 +157,33 @@ context_forge/
 
 ## Configuration
 
-### MCP Server (`opencode.json`)
+### LLM API（摘要生成必需）
+
+摘要生成功能需要配置 LLM API。配置方式（按优先级）：
+
+**方式 1：交互式配置向导（推荐）**
+```bash
+npx tsx scripts/setup-config.ts
+```
+
+**方式 2：环境变量**
+```bash
+export CONTEXT_FORGE_LLM_API_KEY=sk-...
+export CONTEXT_FORGE_LLM_BASE_URL=https://api.openai.com/v1
+export CONTEXT_FORGE_LLM_MODEL=gpt-4o
+```
+
+**方式 3：配置文件**
+```bash
+cp config.json.example .ctx_plugin/config.json
+# 编辑 .ctx_plugin/config.json 填入 API Key
+```
+
+配置优先级：**环境变量 > `.ctx_plugin/config.json` > `config.json` > 内置默认值**
+
+支持的 LLM 提供商：OpenAI、Groq/Perplexity（OpenAI兼容）、GLM（智谱）、SiliconFlow（硅基流动）、任意 OpenAI-compatible API。
+
+### MCP Server（opencode.json）
 
 ```json
 {
@@ -186,8 +216,13 @@ Feature flags (optional env vars):
 
 | Variable | Purpose |
 |----------|---------|
+| `CONTEXT_FORGE_LLM_API_KEY` | LLM API Key（启用摘要生成） |
+| `CONTEXT_FORGE_LLM_BASE_URL` | LLM API 端点（默认 OpenAI） |
+| `CONTEXT_FORGE_LLM_MODEL` | LLM 模型名（默认 gpt-4o） |
 | `CTX_PLUGIN_REQUIRE_SECURITY` | `1` = 策略匹配时 fail-closed |
 | `CTX_PLUGIN_DATA_DIR` | 覆盖会话 DB 基目录 |
 | `CTX_PLUGIN_VERBOSE` | `1` = 输出调试日志 |
 | `CAVEMAN_DEFAULT_MODE` | 默认压缩级别（`full`, `ultra`, `wenyan` 等） |
 | `OPENCODE_CONFIG_DIR` | 覆盖 opencode 配置目录 |
+| `CTX_DISABLE_EXECUTION` | `1` = 禁用代码执行工具 |
+| `CTX_DISABLE_MEMORY` | `1` = 禁用记忆/摘要工具 |
