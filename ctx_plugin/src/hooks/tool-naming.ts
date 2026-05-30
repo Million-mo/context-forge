@@ -29,23 +29,42 @@ const TOOL_ALIASES: Record<string, string> = {
   "Agent": "Agent",
   "Task": "Agent",
   "task": "Agent",
-  // ctx_plugin MCP tool normalization
+  // Context Forge MCP tool normalization (both legacy ctx_plugin and new mcp_context_forge prefixes)
   "mcp__ctx_plugin__ctx_execute": "ctx_execute",
+  "mcp__mcp_context_forge__ctx_execute": "ctx_execute",
   "MCP:ctx_execute": "ctx_execute",
   "mcp__ctx_plugin__ctx_execute_file": "ctx_execute_file",
+  "mcp__mcp_context_forge__ctx_execute_file": "ctx_execute_file",
   "MCP:ctx_execute_file": "ctx_execute_file",
   "mcp__ctx_plugin__ctx_batch_execute": "ctx_batch_execute",
+  "mcp__mcp_context_forge__ctx_batch_execute": "ctx_batch_execute",
   "MCP:ctx_batch_execute": "ctx_batch_execute",
   "mcp__ctx_plugin__ctx_index": "ctx_index",
+  "mcp__mcp_context_forge__ctx_index": "ctx_index",
   "MCP:ctx_index": "ctx_index",
   "mcp__ctx_plugin__ctx_search": "ctx_search",
+  "mcp__mcp_context_forge__ctx_search": "ctx_search",
   "MCP:ctx_search": "ctx_search",
   "mcp__ctx_plugin__ctx_stats": "ctx_stats",
+  "mcp__mcp_context_forge__ctx_stats": "ctx_stats",
   "MCP:ctx_stats": "ctx_stats",
   "mcp__ctx_plugin__ctx_runtimes": "ctx_runtimes",
+  "mcp__mcp_context_forge__ctx_runtimes": "ctx_runtimes",
   "MCP:ctx_runtimes": "ctx_runtimes",
   "mcp__ctx_plugin__ctx_ping": "ctx_ping",
+  "mcp__mcp_context_forge__ctx_ping": "ctx_ping",
   "MCP:ctx_ping": "ctx_ping",
+  // summary_* tools
+  "mcp__mcp_context_forge__summary_recall": "summary_recall",
+  "mcp__mcp_context_forge__summary_search": "summary_search",
+  "mcp__mcp_context_forge__summary_list": "summary_list",
+  "mcp__mcp_context_forge__summary_get": "summary_get",
+  "mcp__mcp_context_forge__summary_messages": "summary_messages",
+  "mcp__mcp_context_forge__summary_health": "summary_health",
+  "mcp__mcp_context_forge__ctx_session": "ctx_session",
+  "mcp__mcp_context_forge__ctx_purge": "ctx_purge",
+  "mcp__mcp_context_forge__ctx_fetch_and_index": "ctx_fetch_and_index",
+  "mcp__mcp_context_forge__ctx_doctor": "ctx_doctor",
 };
 
 /**
@@ -72,7 +91,9 @@ export function isExternalMcpTool(name: string): boolean {
 export function isCtxPluginTool(name: string): boolean {
   return (
     name.startsWith("ctx_") ||
+    name.startsWith("summary_") ||
     name.startsWith("mcp__ctx_plugin__") ||
+    name.startsWith("mcp__mcp_context_forge__") ||
     name.startsWith("MCP:ctx_")
   );
 }

@@ -18,7 +18,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { homedir } from "node:os";
-import { Database } from "./db-base.js";
+import { Database } from "@context-forge/shared-types/db";
 
 // ─────────────────────────────────────────────────────────
 // Types

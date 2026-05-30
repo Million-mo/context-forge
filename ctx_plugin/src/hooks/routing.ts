@@ -157,6 +157,37 @@ const DANGEROUS_PATTERNS: RegExp[] = [
   /`[^`]*`.*\|.*sh/i,
 ];
 
+// Inline HTTP patterns — detect code-level HTTP in Bash (not curl/wget).
+// These are stripped of heredoc content to avoid false positives
+// from cat <<EOF blocks containing example code.
+const INLINE_HTTP_PATTERNS: RegExp[] = [
+  /\bfetch\s*\(\s*['"](https?:\/\/|http)/i,
+  /\brequests\.(get|post|put|delete|patch)\s*\(/i,
+  /\bhttp\.(get|request)\s*\(/i,
+  /\burllib/i,
+  /Net::HTTP/i,
+  /\bLWP::/i,
+];
+
+// Build tools that produce extremely verbose output — hard-intercept to sandbox.
+// Excludes npm/cargo/go which are handled by soft guidance.
+const VERBOSE_BUILD_PATTERNS: RegExp[] = [
+  /(^|\s|&&|\||;)(\.\/gradlew|gradlew|gradle|\.\/mvnw|mvnw|mvn|\.\/sbt|sbt)(\s|$)/i,
+];
+
+function stripHeredocs(cmd: string): string {
+  return cmd.replace(/<<-?\s*["']?(\w+)["']?[\s\S]*?\n\s*\1/g, "");
+}
+
+function hasInlineHttp(command: string): boolean {
+  const noHeredoc = stripHeredocs(command);
+  return INLINE_HTTP_PATTERNS.some(rx => rx.test(noHeredoc));
+}
+
+function isVerboseBuildTool(command: string): boolean {
+  return VERBOSE_BUILD_PATTERNS.some(rx => rx.test(command));
+}
+
 // ─────────────────────────────────────────────────────────
 // Shell Evaluation Detection
 // ─────────────────────────────────────────────────────────
@@ -234,6 +265,11 @@ export function routeTool(ctx: RouteContext): RouteDecision {
       return routeAgent(args, sessionId);
 
     default:
+      // ctx_execute / ctx_execute_file / ctx_batch_execute — security validation
+      if (tool === "ctx_execute" || tool === "ctx_execute_file" || tool === "ctx_batch_execute") {
+        return routeContextForgeTool(tool, args);
+      }
+
       // Check for external MCP tools
       if (isExternalMcpTool(tool)) {
         return routeExternalMcp(sessionId);
@@ -272,20 +308,47 @@ function routeBash(
 
   // 2. Dangerous command detection (curl piped to sh, etc.)
   if (hasDangerousPattern(command)) {
-    const guidance = buildGuidanceContext("curl", sessionId);
     return {
-      action: "context",
-      reason: "Dangerous pattern detected",
-      additionalContext: guidance ?? undefined,
+      action: "deny",
+      reason: "curl/wget piped to shell blocked by security policy. Use ctx_execute with fetch() instead.",
     };
   }
 
-  // 3. Structurally bounded commands pass through (no guidance)
+  // 3. Inline HTTP detection — code-level HTTP should use ctx_execute
+  if (hasInlineHttp(command)) {
+    if (!mcpReady) return { action: "allow" };
+    return {
+      action: "modify",
+      reason: "Inline HTTP blocked. Use ctx_execute to write code that fetches and prints only the result.",
+      updatedArgs: {
+        command: `echo "context-mode: Inline HTTP blocked. Use ctx_execute(language, code) to fetch, process, and console.log() only the result. Do NOT retry with Bash."`,
+      },
+    };
+  }
+
+  // 4. Structurally bounded commands pass through (no guidance)
   if (isStructurallyBounded(command)) {
     return { action: "allow" };
   }
 
-  // 4. Build tool detected
+  // 5. Verbose build tools — hard-intercept, redirect to sandbox
+  if (isVerboseBuildTool(command)) {
+    if (!mcpReady) return { action: "allow" };
+    const safeCmd = command
+      .replace(/\\/g, "\\\\")
+      .replace(/"/g, '\\"')
+      .replace(/\$/g, "\\$")
+      .replace(/`/g, "\\`");
+    return {
+      action: "modify",
+      reason: "Build tool output redirected to sandbox to protect context window.",
+      updatedArgs: {
+        command: `echo "Build tool redirected. Use ctx_execute(language: \\"shell\\", code: \\"${safeCmd} 2>&1 | tail -30\\") to run and print only errors/summary. Do NOT retry with Bash."`,
+      },
+    };
+  }
+
+  // 6. Build tool detected (npm/cargo/go — soft guidance)
   if (isBuildTool(command)) {
     if (mcpReady) {
       const guidance = buildGuidanceContext("build-tool", sessionId);
@@ -299,7 +362,7 @@ function routeBash(
     return { action: "allow" };
   }
 
-  // 5. Unbounded output (install, run scripts)
+  // 7. Unbounded output (install, run scripts)
   if (isUnboundedOutput(command)) {
     const guidance = buildGuidanceContext("large-output", sessionId);
     if (guidance) {
@@ -311,7 +374,7 @@ function routeBash(
     return { action: "allow" };
   }
 
-  // 6. General bash guidance (once per session)
+  // 8. General bash guidance (once per session)
   if (mcpReady) {
     const guidance = buildGuidanceContext("bash", sessionId);
     if (guidance) {
@@ -383,15 +446,11 @@ function routeWebFetch(
   sessionId: string,
   mcpReady: boolean,
 ): RouteDecision {
-  if (!mcpReady) {
-    return { action: "allow" };
-  }
-
-  const guidance = buildGuidanceContext("webfetch", sessionId);
+  if (!mcpReady) return { action: "allow" };
 
   return {
-    action: "context",
-    additionalContext: guidance ?? "WebFetch is discouraged in sandbox. Consider ctx_execute with fetch() or ctx_index for web content.",
+    action: "deny",
+    reason: "WebFetch blocked. Use ctx_fetch_and_index(url, source) to fetch and index, then ctx_search to query. Or use ctx_execute to fetch and console.log() only what you need.",
   };
 }
 
@@ -433,8 +492,86 @@ function routeAgent(
   args: Record<string, unknown>,
   sessionId: string,
 ): RouteDecision {
-  // Agent/subagent: inject routing block into prompt if available
-  // For now, allow
+  // Inject routing block into subagent prompts
+  const subagentType = (args.subagent_type as string) ?? "";
+  const fieldName = ["prompt", "request", "objective", "question", "query", "task"].find(
+    (f) => f in args,
+  );
+  if (!fieldName) return { action: "allow" };
+
+  const prompt = (args[fieldName] as string) ?? "";
+
+  return {
+    action: "modify",
+    updatedArgs: {
+      ...args,
+      [fieldName]: prompt + "\n\n" + ROUTING_BLOCK_SUBAGENT,
+      ...(subagentType === "Bash" ? { subagent_type: "general-purpose" } : {}),
+    },
+  };
+}
+
+/**
+ * Security validation for ctx_execute / ctx_execute_file / ctx_batch_execute.
+ * Checks shell code and file paths against deny patterns.
+ */
+function routeContextForgeTool(
+  tool: string,
+  args: Record<string, unknown>,
+): RouteDecision {
+  // ctx_execute: check shell code against Bash security policy
+  if (tool === "ctx_execute" || tool === "ctx_execute_file") {
+    const language = (args.language as string) ?? "";
+    const code = (args.code as string) ?? "";
+
+    if (language === "shell" && code) {
+      if (hasDangerousPattern(code)) {
+        return {
+          action: "deny",
+          reason: "Shell code blocked: matches dangerous pattern (curl|sh, eval, etc.)",
+        };
+      }
+      if (hasInlineHttp(code)) {
+        return {
+          action: "deny",
+          reason: "Inline HTTP in shell code blocked. Use ctx_execute with JS/TS fetch() instead.",
+        };
+      }
+    }
+
+    // ctx_execute_file: also check file path
+    if (tool === "ctx_execute_file") {
+      const filePath = (args.path as string) ?? "";
+      if (filePath) {
+        const security = checkSecurityPolicy({ tool: "Read", command: filePath });
+        if (security.action === "deny") {
+          return { action: "deny", reason: security.reason };
+        }
+      }
+    }
+  }
+
+  // ctx_batch_execute: check each command individually
+  if (tool === "ctx_batch_execute") {
+    const raw = args.commands;
+    const commands = Array.isArray(raw) ? raw as Array<{ command?: string }> : [];
+    for (const entry of commands) {
+      const cmd = entry.command ?? "";
+      if (hasDangerousPattern(cmd)) {
+        return {
+          action: "deny",
+          reason: `Batch command blocked: matches dangerous pattern`,
+        };
+      }
+      if (hasInlineHttp(cmd)) {
+        return {
+          action: "deny",
+          reason: "Inline HTTP in batch command blocked. Use ctx_execute with JS/TS fetch() instead.",
+        };
+      }
+    }
+  }
+
   return { action: "allow" };
 }
 
@@ -455,19 +592,86 @@ function routeExternalMcp(sessionId: string): RouteDecision {
 
 /**
  * Routing block injected into Agent/subagent prompts.
+ * Full version — includes ctx_commands section for slash commands.
  */
-export const ROUTING_BLOCK = `
-## ctx_plugin Routing Guidance
+export const ROUTING_BLOCK = createRoutingBlock(true);
 
-When the ctx_plugin MCP server is available, prefer these tools:
-- ctx_execute: sandboxed code execution (any language, 100MB output limit)
-- ctx_execute_file: execute scripts with file-based content
-- ctx_batch_execute: sequential commands with aggregated output
-- ctx_search: FTS5 full-text search across indexed content
-- ctx_index: index files or content for search
+/**
+ * Routing block for subagents — omits ctx_commands (subagents can't use them).
+ */
+export const ROUTING_BLOCK_SUBAGENT = createRoutingBlock(false);
 
-Security rules:
-- curl/wget piped to shell is blocked by security policy
-- WebFetch is discouraged; use ctx_execute with fetch() instead
-- Shell evaluation in non-shell code is scanned by security policy
-`.trim();
+function createRoutingBlock(includeCommands: boolean): string {
+  return `
+<context_window_protection>
+  <priority_instructions>
+    Raw tool output floods context window. MUST use Context Forge MCP tools. Keep raw data in sandbox.
+  </priority_instructions>
+
+  <tool_selection_hierarchy>
+    0. MEMORY: summary_recall | summary_search | ctx_session
+       - On session start or after /clear, check prior context before asking user.
+    1. GATHER: ctx_batch_execute(commands, queries)
+       - Primary research tool. Runs commands, auto-indexes, searches. ONE call replaces many steps.
+       - Each command: {label: "section header", command: "shell command"}
+       - label becomes FTS5 chunk title — descriptive labels improve search.
+    2. FOLLOW-UP: ctx_search(queries: ["q1", "q2", ...])
+       - All follow-up questions. ONE call, many queries.
+    3. PROCESSING: ctx_execute(language, code) | ctx_execute_file(path, language, code)
+       - API calls, log analysis, data processing.
+  </tool_selection_hierarchy>
+
+  <forbidden_actions>
+    - NO Bash for commands producing >20 lines output.
+    - NO Read for analysis — use ctx_execute_file. Read IS correct for files you intend to Edit.
+    - NO WebFetch — use ctx_fetch_and_index.
+    - Bash ONLY for git/mkdir/rm/mv/navigation.
+    - NO ctx_execute or ctx_execute_file for file creation/modification.
+      ctx_execute is for analysis, processing, computation only.
+  </forbidden_actions>
+
+  <file_writing_policy>
+    ALWAYS use native Write/Edit tools for file creation/modification.
+    NEVER use ctx_execute, ctx_execute_file, or Bash to write files.
+    Applies to all file types: code, configs, plans, specs, YAML, JSON, markdown.
+  </file_writing_policy>
+
+  <output_constraints>
+    <communication_style>
+      Terse like caveman. Technical substance exact. Only fluff die.
+      Use fragments when clear. Short synonyms (fix not "implement a solution for").
+      Technical terms exact. Code blocks unchanged.
+      Auto-expand for: security warnings, irreversible actions, user confusion.
+    </communication_style>
+    <artifact_policy>
+      Write artifacts (code, configs, PRDs) to FILES. NEVER inline.
+      Return only: file path + 1-line description.
+    </artifact_policy>
+    <response_format>
+      Concise summary:
+      - Actions taken (2-3 bullets)
+      - File paths created/modified
+      - Key findings
+    </response_format>
+  </output_constraints>
+
+  <session_continuity>
+    Skills, roles, and decisions set during this session remain active until the user revokes them.
+    Do not drop behavioral directives as context grows.
+  </session_continuity>
+${includeCommands ? `
+  <ctx_commands>
+    "ctx stats" | "ctx-stats" | "/ctx-stats" | context savings question
+    → Call ctx_stats tool, display full output verbatim.
+
+    "ctx doctor" | "ctx-doctor" | "/ctx-doctor" | diagnose context-mode
+    → Call ctx_doctor tool, display as checklist.
+
+    "ctx purge" | "ctx-purge" | "/ctx-purge" | wipe/reset knowledge base
+    → Call ctx_purge tool. Warn: irreversible.
+
+    After /clear or /compact: knowledge base preserved. Tell user: "Context Forge knowledge base preserved."
+  </ctx_commands>
+` : ""}
+</context_window_protection>`;
+}

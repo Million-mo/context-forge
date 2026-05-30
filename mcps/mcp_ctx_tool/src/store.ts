@@ -5,7 +5,7 @@
  * stores in SQLite FTS5, and retrieves via BM25-ranked search.
  */
 
-import { Database } from "./db-base.js";
+import { Database } from "@context-forge/shared-types/db";
 import { createHash } from "node:crypto";
 import { readFileSync, existsSync, statSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";

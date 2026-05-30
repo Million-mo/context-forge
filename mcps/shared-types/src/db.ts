@@ -1,7 +1,13 @@
 /**
- * Database base for mcp_ctx_tool.
+ * Unified SQLite database wrapper for Context Forge.
  *
- * Provides SQLite infrastructure using Node.js built-in sqlite module.
+ * Single source of truth — all components (MCP servers, plugins)
+ * use this class instead of raw node:sqlite or better-sqlite3.
+ *
+ * Features:
+ *   - WAL mode + NORMAL synchronous for concurrent read/write safety
+ *   - Prepared statement wrapper with consistent return types
+ *   - Transaction helper with auto-rollback
  */
 
 import { DatabaseSync } from "node:sqlite";
@@ -17,13 +23,18 @@ export interface PreparedStatement {
 }
 
 /**
- * SQLite database wrapper with WAL mode and retry logic.
+ * SQLite database wrapper with WAL mode and standard pragmas.
+ *
+ * Usage:
+ *   const db = new Database("/path/to/data.db");
+ *   const row = db.prepare("SELECT * FROM t WHERE id = ?").get(1);
+ *   db.close();
  */
 export class Database {
   #db: DatabaseSync;
 
-  constructor(path: string) {
-    this.#db = new DatabaseSync(path);
+  constructor(path: string, opts?: { readonly?: boolean }) {
+    this.#db = new DatabaseSync(path, { open: !opts?.readonly });
     this.#init();
   }
 
@@ -48,8 +59,10 @@ export class Database {
           lastInsertRowid: Number(result.lastInsertRowid),
         };
       },
-      get: (...params: unknown[]) => stmt.get(...(params as Parameters<typeof stmt.get>)),
-      all: (...params: unknown[]) => stmt.all(...(params as Parameters<typeof stmt.all>)),
+      get: (...params: unknown[]) =>
+        stmt.get(...(params as Parameters<typeof stmt.get>)),
+      all: (...params: unknown[]) =>
+        stmt.all(...(params as Parameters<typeof stmt.all>)),
     };
   }
 
@@ -74,10 +87,16 @@ export class Database {
   }
 }
 
+/**
+ * Convenience — open a read-write database.
+ */
 export function openDatabase(path: string): Database {
   return new Database(path);
 }
 
-export function closeDatabase(db: Database): void {
-  db.close();
+/**
+ * Convenience — open a read-only database.
+ */
+export function openReadonlyDatabase(path: string): Database {
+  return new Database(path, { readonly: true });
 }

@@ -1,78 +1,75 @@
 /**
- * One-shot installer for all MCP servers.
+ * One-shot installer for the unified MCP server.
  *
  * Usage:
- *   npx tsx scripts/install-all.ts        (install all)
- *   npx tsx scripts/install-all.ts --uninstall  (remove all)
+ *   npx tsx scripts/install-all.ts           (install)
+ *   npx tsx scripts/install-all.ts --uninstall  (remove)
  *
- * Runs:
- *   1. mcp_ctx_tool dist/install.js  (registers mcp_ctx_tool into opencode.json)
- *   2. mcp_ctx_summary dist/install.js  (registers mcp_ctx_summary into opencode.json)
+ * Registers mcp_context_forge (unified execution + indexing + memory) into opencode.json.
+ * Also unregisters the legacy mcp_ctx_tool and mcp_ctx_summary if present.
  */
 
-import { existsSync } from "fs"
-import { execSync } from "child_process"
-import { resolve, dirname } from "path"
-import { fileURLToPath } from "url"
+import { existsSync } from "fs";
+import { execSync } from "child_process";
+import { resolve, dirname } from "path";
+import { fileURLToPath } from "url";
 
-const __dirname = dirname(fileURLToPath(import.meta.url))
-const ROOT = resolve(__dirname, "..")
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const ROOT = resolve(__dirname, "..");
 
-const UNINSTALL = process.argv.includes("--uninstall")
+const UNINSTALL = process.argv.includes("--uninstall");
 
 function run(cmd: string, cwd: string, label: string): void {
-  console.log(`\n[install-all] ${label}`)
-  console.log(`  $ ${cmd}`)
+  console.log(`\n[install-all] ${label}`);
+  console.log(`  $ ${cmd}`);
   try {
-    execSync(cmd, { cwd, stdio: "inherit" })
-    console.log(`  ✓ ${label} done`)
+    execSync(cmd, { cwd, stdio: "inherit" });
+    console.log(`  ✓ ${label} done`);
   } catch (err) {
-    console.error(`  ✗ ${label} failed`)
-    process.exit(1)
+    console.error(`  ✗ ${label} failed`);
+    process.exit(1);
   }
 }
 
 function install(): void {
-  console.log("=== Installing all MCP servers ===\n")
+  console.log("=== Installing Context Forge unified MCP ===\n");
 
-  // 1. mcp_ctx_tool install
-  const ctxToolInstallScript = resolve(ROOT, "mcps", "mcp_ctx_tool", "dist", "install.js")
-  if (existsSync(ctxToolInstallScript)) {
-    run(`node "${ctxToolInstallScript}"`, resolve(ROOT, "mcps", "mcp_ctx_tool"), "mcp_ctx_tool MCP")
-  } else {
-    console.warn("  ! mcp_ctx_tool install script not found, skipping (build it first: cd mcps/mcp_ctx_tool && npm run build)")
+  // 1. Unregister legacy MCPs if they exist
+  const legacyTool = resolve(ROOT, "mcps", "mcp_ctx_tool", "dist", "install.js");
+  if (existsSync(legacyTool)) {
+    run(`node "${legacyTool}" --uninstall`, resolve(ROOT, "mcps", "mcp_ctx_tool"), "unregister legacy mcp_ctx_tool");
   }
 
-  // 2. mcp_ctx_summary install
-  const ctxSummaryInstallScript = resolve(ROOT, "mcps", "mcp_ctx_summary", "dist", "install.js")
-  if (existsSync(ctxSummaryInstallScript)) {
-    run(`node "${ctxSummaryInstallScript}"`, resolve(ROOT, "mcps", "mcp_ctx_summary"), "mcp_ctx_summary MCP")
-  } else {
-    console.warn("  ! mcp_ctx_summary install script not found, skipping (build it first: cd mcps/mcp_ctx_summary && npm run build)")
+  const legacySummary = resolve(ROOT, "mcps", "mcp_ctx_summary", "dist", "install.js");
+  if (existsSync(legacySummary)) {
+    run(`node "${legacySummary}" --uninstall`, resolve(ROOT, "mcps", "mcp_ctx_summary"), "unregister legacy mcp_ctx_summary");
   }
 
-  console.log("\n=== All done ===")
-  console.log("Restart opencode to pick up the new MCP servers.")
+  // 2. Register unified MCP
+  const forgeInstall = resolve(ROOT, "mcps", "mcp_context_forge", "dist", "install.js");
+  if (existsSync(forgeInstall)) {
+    run(`node "${forgeInstall}"`, resolve(ROOT, "mcps", "mcp_context_forge"), "mcp_context_forge (unified)");
+  } else {
+    console.warn("  ! mcp_context_forge install script not found, skipping (build it first: cd mcps/mcp_context_forge && npm run build)");
+  }
+
+  console.log("\n=== All done ===");
+  console.log("Restart opencode to pick up the new unified MCP server.");
 }
 
 function uninstall(): void {
-  console.log("=== Uninstalling all MCP servers ===\n")
+  console.log("=== Uninstalling Context Forge MCP ===\n");
 
-  const ctxToolInstallScript = resolve(ROOT, "mcps", "mcp_ctx_tool", "dist", "install.js")
-  if (existsSync(ctxToolInstallScript)) {
-    run(`node "${ctxToolInstallScript}" --uninstall`, resolve(ROOT, "mcps", "mcp_ctx_tool"), "mcp_ctx_tool MCP")
+  const forgeInstall = resolve(ROOT, "mcps", "mcp_context_forge", "dist", "install.js");
+  if (existsSync(forgeInstall)) {
+    run(`node "${forgeInstall}" --uninstall`, resolve(ROOT, "mcps", "mcp_context_forge"), "mcp_context_forge");
   }
 
-  const ctxSummaryInstallScript = resolve(ROOT, "mcps", "mcp_ctx_summary", "dist", "install.js")
-  if (existsSync(ctxSummaryInstallScript)) {
-    run(`node "${ctxSummaryInstallScript}" --uninstall`, resolve(ROOT, "mcps", "mcp_ctx_summary"), "mcp_ctx_summary MCP")
-  }
-
-  console.log("\n=== All removed ===")
+  console.log("\n=== All removed ===");
 }
 
 if (UNINSTALL) {
-  uninstall()
+  uninstall();
 } else {
-  install()
+  install();
 }

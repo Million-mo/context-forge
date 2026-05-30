@@ -22,39 +22,39 @@ export type GuidanceType =
   | "read"
   | "grep"
   | "external-mcp"
-  | "curl"
-  | "webfetch"
   | "build-tool"
   | "large-output";
 
 export const GUIDANCE_MESSAGES: Record<GuidanceType, string> = {
   bash: (
-    "ctx_plugin guidance: For multi-step bash, prefer ctx_execute for isolation. "
-    + "Large outputs are auto-truncated at 100MB. "
-    + "Use ctx_batch_execute for sequential commands."
+    "<context_guidance>\n"
+    + "  <tip>\n"
+    + "    May produce large output. Use ctx_batch_execute(commands, queries) for multiple commands, "
+    + "ctx_execute(language: \"shell\", code: \"...\") for single. "
+    + "Only printed summary enters context. Bash only for: git, mkdir, rm, mv, navigation.\n"
+    + "  </tip>\n"
+    + "</context_guidance>"
   ),
   read: (
-    "ctx_plugin guidance: For large file analysis (>50KB), "
-    + "ctx_execute_file provides sandboxed read with token estimation. "
-    + "RTK can rewrite read paths."
+    "<context_guidance>\n"
+    + "  <tip>\n"
+    + "    Reading to Edit? Read is correct — Edit needs content in context.\n"
+    + "    Reading to analyze/explore? Use ctx_execute_file(path, language, code) — "
+    + "only printed summary enters context.\n"
+    + "  </tip>\n"
+    + "</context_guidance>"
   ),
   grep: (
-    "ctx_plugin guidance: For multi-file search, ctx_execute enables "
-    + "sandboxed grep with parallel execution. "
-    + "Consider ctx_search for FTS5 full-text search."
+    "<context_guidance>\n"
+    + "  <tip>\n"
+    + "    May flood context. Use ctx_execute(language: \"shell\", code: \"...\") "
+    + "to run searches in sandbox. Only printed summary enters context.\n"
+    + "  </tip>\n"
+    + "</context_guidance>"
   ),
   "external-mcp": (
     "ctx_plugin guidance: External MCP tools can flood context. "
     + "Consider ctx_execute for structured tasks, or ctx_index for searchable content."
-  ),
-  curl: (
-    "ctx_plugin guidance: curl/wget piped to shell is risky. "
-    + "Use ctx_execute with fetch() for HTTP requests, "
-    + "or ctx_fetch_and_index for web content."
-  ),
-  webfetch: (
-    "ctx_plugin guidance: WebFetch is discouraged in sandbox. "
-    + "Use ctx_execute with fetch() or ctx_index for web content."
   ),
   "build-tool": (
     "ctx_plugin guidance: Build tools detected. "

@@ -1,13 +1,10 @@
 {
-  "name": "@context-forge/mcp-ctx-tool",
-  "version": "0.3.0",
-  "description": "Context Forge MCP: sandboxed code execution + FTS5 content indexing",
+  "name": "@context-forge/mcp-context-forge",
+  "version": "0.4.0",
+  "description": "Context Forge unified MCP: sandboxed code execution + FTS5 content indexing + session memory & recall",
   "type": "module",
   "bin": {
-    "mcp_ctx_tool": "./dist/server.js"
-  },
-  "exports": {
-    ".": "./src/index.ts"
+    "mcp_context_forge": "./dist/install.js"
   },
   "scripts": {
     "dev": "tsx watch src/server.ts",

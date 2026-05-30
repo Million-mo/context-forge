@@ -23,40 +23,11 @@ import { resolve } from "node:path"
 import { homedir } from "node:os"
 import { mkdirSync, appendFileSync, existsSync, readFileSync } from "node:fs"
 import { DatabaseSync } from "node:sqlite"
+import type { TurnSummary, ActionEntry, ArtifactChange } from "@context-forge/shared-types"
 
 // ─── Types ─────────────────────────────────────────────────────────────────
 
 type CompressionLevel = "full" | "summary" | "placeholder" | "minimal"
-
-interface TurnSummary {
-  turnIndex: number
-  overview: string
-  intent: string
-  actions: ActionEntry[]
-  artifacts: ArtifactChange[]
-  outcome: "success" | "partial" | "failure" | "unknown"
-  errors: string[]
-  todos: string[]
-  confidence: number
-  reason?: string
-  generatedAt: number
-  tokensUsed?: number
-  startMsgId: string
-  endMsgId: string
-}
-
-interface ActionEntry {
-  tool: string
-  target: string
-  description: string
-  result: string
-}
-
-interface ArtifactChange {
-  path: string
-  action: "created" | "modified" | "deleted" | "read"
-  detail: string
-}
 
 interface ToolOutputEntry {
   key: string

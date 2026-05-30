@@ -1,3 +1,13 @@
+// ─── Database ────────────────────────────────────────────────────────────────
+
+export { Database, openDatabase, openReadonlyDatabase } from "./db.js"
+export type { PreparedStatement } from "./db.js"
+
+// ─── LLM Client ──────────────────────────────────────────────────────────────
+
+export { OpenAIClient, createLLMClient } from "./llm-client.js"
+export type { ChatMessage, ChatResult, ChatError, ChatResponse } from "./llm-client.js"
+
 // ─── Paths ────────────────────────────────────────────────────────────────────
 
 export {

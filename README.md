@@ -2,6 +2,13 @@
 
 A workspace for building, experimenting with, and composing AI coding assistant plugins.
 
+> **定位：AI 编程助手的上下文生命周期管理平台。** 在上下文窗口有限的前提下，
+> 让 AI 能记住更长的对话历史、精确召回关键信息，并大幅降低 token 成本。
+> 三条产品线：`ctx_plugin`（实时压缩）、`mcp_ctx_tool`（执行 + 知识库索引）、
+> `mcp_ctx_summary`（短期会话记忆：压缩存储 + 无损召回）。
+>
+> 详见 [docs/product-value.md](docs/product-value.md) — 完整产品价值分析，含两个 MCP 的边界说明。
+
 ---
 
 ## What's Inside
@@ -33,42 +40,34 @@ Located under `ctx_plugin/skills/`:
 
 ---
 
-## MCP Servers
+## MCP Server
 
-Located under `mcps/`:
+A single unified MCP server — `mcp_context_forge` — combines execution, content indexing, and session memory.
 
-| Package | Tools | Description |
-|---------|-------|-------------|
-| `mcp_ctx_tool` | 10 tools | 沙箱多语言代码执行 + FTS5 内容索引/搜索 |
-| `mcp_ctx_summary` | 6 tools | 会话摘要召回 + 全局 FTS 搜索 |
-
-### mcp_ctx_tool
-
-| Tool | Description |
-|------|-------------|
-| `ctx_ping` | 健康检查 |
-| `ctx_execute` | 沙箱执行代码（11 种语言，100MB 输出上限） |
-| `ctx_runtimes` | 列出可用运行时及版本 |
-| `ctx_index` | 将文件或文本索引到 FTS5 存储 |
-| `ctx_search` | BM25 + trigram RRF 融合搜索 |
-| `ctx_stats` | 存储统计信息 |
-| `ctx_execute_file` | 执行脚本文件 |
-| `ctx_batch_execute` | 批量顺序/并行执行 |
-| `ctx_fetch_and_index` | 抓取网页内容并索引 |
-| `ctx_purge` | 清理会话数据 |
+| Group | Tool | Description |
+|-------|------|-------------|
+| **exec** | `ctx_execute` | 沙箱执行代码（11 种语言，100MB 输出上限） |
+| | `ctx_execute_file` | 执行脚本文件（路径穿越保护） |
+| | `ctx_batch_execute` | 批量顺序/并行执行 |
+| | `ctx_runtimes` | 列出可用运行时及版本 |
+| **index** | `ctx_index` | 将文件或文本索引到 FTS5 存储 |
+| | `ctx_search` | BM25 + trigram RRF 融合搜索 |
+| | `ctx_fetch_and_index` | 抓取网页内容并索引 |
+| | `ctx_stats` | 存储统计信息 |
+| **memory** | `summary_recall` | 意图驱动的 LLM 语义召回 |
+| | `summary_search` | FTS5 全文搜索摘要 |
+| | `summary_list` | 列出某会话的所有摘要 |
+| | `summary_get` | 按会话 ID 和轮次获取单个摘要 |
+| | `summary_messages` | 获取某轮次的原始消息（无损） |
+| | `ctx_session` | 会话分析 + resume 快照 |
+| **infra** | `ctx_doctor` | 系统诊断 |
+| | `ctx_ping` | 健康检查 |
+| | `ctx_purge` | 清理会话数据 |
+| | `summary_health` | 摘要 DB 统计 |
 
 **支持语言：** `javascript`, `typescript`, `python`, `shell`, `ruby`, `go`, `rust`, `php`, `perl`, `r`, `elixir`
 
-### mcp_ctx_summary
-
-| Tool | Description |
-|------|-------------|
-| `summary_recall` | 意图驱动的召回（通过 LLM 生成） |
-| `summary_search` | 全局 FTS 全文搜索摘要 |
-| `summary_list` | 列出某会话的所有摘要 |
-| `summary_get` | 按会话 ID 和轮次获取单个摘要 |
-| `summary_messages` | 获取某轮次的原始消息 |
-| `summary_health` | 健康检查 + DB 统计 |
+> 旧版 `mcp_ctx_tool` 和 `mcp_ctx_summary` 已合并，详见 [DEPRECATED.md](mcps/mcp_ctx_tool/DEPRECATED.md)。
 
 ---
 
@@ -76,18 +75,12 @@ Located under `mcps/`:
 
 ```bash
 # 1. 安装依赖并构建
-cd mcps/mcp_ctx_tool
-npm install && npm run build
-cd ../mcp_ctx_summary
+cd mcps/mcp_context_forge
 npm install && npm run build
 cd ../..
 
 # 2. 注册到 opencode.json
 npx tsx scripts/install-all.ts
-
-# 或分别安装
-node mcps/mcp_ctx_tool/dist/install.js
-node mcps/mcp_ctx_summary/dist/install.js
 
 # 3. 重启 opencode
 ```
@@ -99,26 +92,32 @@ node mcps/mcp_ctx_summary/dist/install.js
 ```
 context_forge/
 ├── README.md
-├── mcps/                          # MCP 服务器包
-│   ├── mcp_ctx_tool/              # 代码执行 + FTS5 搜索
+├── mcps/
+│   ├── mcp_context_forge/         # 统一 MCP 服务器
 │   │   └── src/
-│   │       ├── server.ts           # MCP stdio 服务端
-│   │       ├── executor.ts         # PolyglotExecutor 沙箱执行器
+│   │       ├── server.ts          # 18 tools, 4 groups (exec/index/memory/infra)
+│   │       ├── summary-queries.ts # 摘要 DB 查询（从旧 MCP 提取）
+│   │       └── install.ts
+│   ├── mcp_ctx_tool/              # [DEPRECATED] 源码作为库供统一 MCP 引用
+│   │   └── src/
+│   │       ├── executor.ts        # PolyglotExecutor 沙箱执行器
 │   │       ├── runtime.ts         # 运行时检测（11 种语言）
-│   │       ├── store.ts           # FTS5 BM25 + trigram RRF 搜索
-│   │       ├── session-db.ts      # SQLite 会话事件存储
-│   │       ├── db-base.ts         # SQLite 基础封装
-│   │       ├── install.ts         # 注册到 opencode.json
-│   │       └── types.ts
-│   ├── mcp_ctx_summary/           # 上下文摘要 + 召回
+│   │       ├── store.ts           # ContentStore FTS5 索引
+│   │       ├── session-db.ts      # 会话事件存储
+│   │       └── session/           # extract, snapshot, analytics
+│   ├── mcp_ctx_summary/           # [DEPRECATED] 源码作为库供统一 MCP 引用
 │   │   └── src/
-│   │       ├── server.ts          # MCP stdio 服务端
-│   │       ├── llm.ts             # 召回 LLM 客户端
-│   │       ├── recall-prompts.ts  # 召回提示词
-│   │       ├── install.ts         # 注册到 opencode.json
-│   │       └── types.ts
-│   └── shared-types/              # 共享 TypeScript 类型
-├── ctx_plugin/                    # opencode 插件（RTK + Caveman）
+│   │       └── recall-prompts.ts
+│   └── shared-types/              # 共享类型 + DB + LLM 客户端
+│       └── src/
+│           ├── db.ts              # 统一 SQLite 封装
+│           ├── llm-client.ts      # 统一 LLM API 客户端
+│           ├── config.ts          # 统一配置加载
+│           ├── paths.ts           # XDG 路径解析
+│           ├── schema.ts          # SQLite schema
+│           ├── prompts.ts         # LLM 提示词
+│           └── install-helper.ts
+├── ctx_plugin/                    # opencode 插件（RTK + Caveman + Transform）
 │   ├── src/
 │   │   ├── index.ts              # barrel export
 │   │   ├── caveman.ts            # Caveman 压缩模式插件
@@ -139,7 +138,7 @@ context_forge/
 │       ├── caveman-compress/
 │       └── caveman-help/
 └── scripts/
-    └── install-all.ts            # 一键安装两个 MCP
+    └── install-all.ts            # 一键安装统一 MCP
 ```
 
 ---
@@ -159,17 +158,17 @@ context_forge/
 ```json
 {
   "mcp": {
-    "mcp_ctx_tool": {
+    "mcp_context_forge": {
       "type": "local",
-      "command": ["node", "/absolute/path/to/mcps/mcp_ctx_tool/dist/server.js"]
-    },
-    "mcp_ctx_summary": {
-      "type": "local",
-      "command": ["node", "/absolute/path/to/mcps/mcp_ctx_summary/dist/server.js"]
+      "command": ["node", "/absolute/path/to/mcps/mcp_context_forge/dist/server.js"]
     }
   }
 }
 ```
+
+Feature flags (optional env vars):
+- `CTX_DISABLE_EXECUTION=1` — skip execution tools
+- `CTX_DISABLE_MEMORY=1` — skip memory tools (no summaries.db required)
 
 ### Security Policy (`settings.json`)
 

@@ -19,7 +19,7 @@ import os from "node:os"
 import { existsSync, readFileSync } from "node:fs"
 import { normalizeToolName, isCtxPluginTool } from "./hooks/tool-naming.js"
 import { buildGuidanceContext } from "./hooks/guidance.js"
-import { routeTool, type RouteDecision, type RouteContext } from "./hooks/routing.js"
+import { routeTool, ROUTING_BLOCK, type RouteDecision, type RouteContext } from "./hooks/routing.js"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // MCP ready detection
@@ -116,6 +116,12 @@ function isSafeCommand(cmd: string): boolean {
 function isDangerousCommand(cmd: string): boolean {
   return DANGEROUS_PATTERNS.some(rx => rx.test(cmd))
 }
+
+// ─────────────────────────────────────────────────────────
+// First-message injection tracking
+// ─────────────────────────────────────────────────────────
+
+const _firstMessageInjected = new Set<string>();
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Plugin factory
@@ -220,8 +226,18 @@ export const RoutingPlugin = async (input) => {
       output.status = "ask"
     },
 
-    // Inject guidance from routing decision into model context
+    // Inject ROUTING_BLOCK on first message + guidance from routing decisions
     "chat.message": async (input, output) => {
+      // First message of session: inject routing block
+      if (!_firstMessageInjected.has(sessionId)) {
+        _firstMessageInjected.add(sessionId);
+        output.parts.push({
+          type: "text",
+          text: "\n\n" + ROUTING_BLOCK + "\n\n" +
+            "Memory tip: Use summary_recall or ctx_session to check prior context before asking the user.",
+        });
+      }
+
       if (output.context) {
         const ctx = output.context as Record<string, unknown>
         if (ctx.__ctxPluginGuidance) {

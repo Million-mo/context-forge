@@ -29,6 +29,14 @@
     "./schema": {
       "types": "./dist/schema.d.ts",
       "import": "./dist/schema.js"
+    },
+    "./db": {
+      "types": "./dist/db.d.ts",
+      "import": "./dist/db.js"
+    },
+    "./llm-client": {
+      "types": "./dist/llm-client.d.ts",
+      "import": "./dist/llm-client.js"
     }
   },
   "scripts": {
