@@ -6,8 +6,7 @@
  * the inline logic in the old mcp_ctx_summary server.
  */
 
-import { Database } from "@context-forge/shared-types/db";
-import { getSummariesDbPath } from "@context-forge/shared-types/paths";
+import { Database, getSummariesDbPath } from "@context-forge/shared-types";
 import type {
   StoredMessage,
   SummaryWithSession,

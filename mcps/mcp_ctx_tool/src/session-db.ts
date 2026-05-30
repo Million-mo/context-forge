@@ -18,7 +18,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { homedir } from "node:os";
-import { Database } from "@context-forge/shared-types/db";
+import { Database } from "@context-forge/shared-types";
 
 // ─────────────────────────────────────────────────────────
 // Types
@@ -81,6 +81,9 @@ export interface ToolEvent {
   /** Optional classified fields (new). */
   category?: EventCategory;
   priority?: number;
+  /** Optional — for session-level events. */
+  project_dir?: string;
+  source_hook?: string;
 }
 
 export interface SessionMeta {
@@ -217,7 +220,7 @@ export function initSessionDb(projectDir?: string): void {
 
     // Migration: add category/priority columns for existing DBs
     try {
-      const colInfo = _db.raw.pragma("table_xinfo(events)") as Array<{ name: string }>;
+      const colInfo = (_db.raw as any).pragma("table_xinfo(events)") as Array<{ name: string }>;
       if (!colInfo) return;
       const cols = new Set(colInfo.map((c) => c.name));
       if (!cols.has("category")) {

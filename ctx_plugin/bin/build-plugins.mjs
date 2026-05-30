@@ -159,7 +159,7 @@ for (const plugin of PLUGINS) {
     const schemaTsPath = resolve(ROOT, "..", "mcps", "shared-types", "src", "schema.ts")
     if (existsSync(schemaTsPath)) {
       const schemaTs = readFileSync(schemaTsPath, "utf8")
-      const match = schemaTs.match(/export const SUMMARIES_DB_SCHEMA = `([\s\S]*?)`;/)
+      const match = schemaTs.match(/export const SUMMARIES_DB_SCHEMA = `([\s\S]*?)`\s*;?/)
       if (match) {
         const canonicalSchema = match[1]
         code = code.replace(/`__CTX_SUMMARIES_SCHEMA__`/, "`" + canonicalSchema + "`")

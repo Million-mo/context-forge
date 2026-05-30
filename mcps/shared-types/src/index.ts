@@ -24,6 +24,10 @@ export {
   getSessionsDir,
 } from "./paths.js"
 
+// ─── Prompts ──────────────────────────────────────────────────────────────────
+
+export { SUMMARY_SYSTEM_PROMPT, SUMMARY_USER_PROMPT, MAX_SERIALIZED_SIZE } from "./prompts.js"
+
 // ─── Config ───────────────────────────────────────────────────────────────────
 
 export {

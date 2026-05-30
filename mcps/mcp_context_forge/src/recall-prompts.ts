@@ -1,6 +1,13 @@
-import type { StoredMessage, TurnSummary } from "@context-forge/shared-types"
+/**
+ * Recall prompt builder — extracted from mcp_ctx_summary.
+ *
+ * Builds LLM prompts for intent-driven memory recall across conversation history.
+ */
 
-export { SUMMARY_SYSTEM_PROMPT, SUMMARY_USER_PROMPT, MAX_SERIALIZED_SIZE } from "@context-forge/shared-types"
+import type { StoredMessage, TurnSummary } from "@context-forge/shared-types"
+import { SUMMARY_SYSTEM_PROMPT, SUMMARY_USER_PROMPT, MAX_SERIALIZED_SIZE } from "@context-forge/shared-types"
+
+export { SUMMARY_SYSTEM_PROMPT, SUMMARY_USER_PROMPT, MAX_SERIALIZED_SIZE }
 
 export const RECALL_SYSTEM_PROMPT = `You are a memory recall assistant. Given a conversation turn and a query, recall the most relevant information that answers the user's question.
 

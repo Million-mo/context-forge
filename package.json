@@ -17,6 +17,8 @@
     "build:shared-types": "npm run build --workspace=@context-forge/shared-types",
     "build:ctx-forge": "npm run build:shared-types && npm run build --workspace=@context-forge/mcp-context-forge",
     "build:all": "npm run build:ctx-forge",
+    "build:server": "npm run build:shared-types && node scripts/build-server.mjs",
+    "start:server": "node mcps/mcp_context_forge/dist/server.js",
     "typecheck": "npm run typecheck --workspace=@context-forge/shared-types && npm run typecheck --workspace=@context-forge/mcp-context-forge"
   }
 }

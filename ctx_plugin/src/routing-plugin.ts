@@ -35,7 +35,7 @@ function checkMcpReady(): boolean {
     const configPath = path.join(configDir, "opencode.json")
     if (existsSync(configPath)) {
       const cfg = JSON.parse(readFileSync(configPath, "utf8"))
-      if (cfg?.mcp?.ctx_plugin) return true
+      if (cfg?.mcp?.ctx_plugin || cfg?.mcp?.mcp_context_forge) return true
     }
   } catch {}
   return false

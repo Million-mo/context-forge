@@ -45,6 +45,25 @@ const TOOL_ALIASES = {
     "MCP:ctx_runtimes": "ctx_runtimes",
     "mcp__ctx_plugin__ctx_ping": "ctx_ping",
     "MCP:ctx_ping": "ctx_ping",
+    // mcp_context_forge tool normalization
+    "mcp__mcp_context_forge__ctx_execute": "ctx_execute",
+    "mcp__mcp_context_forge__ctx_execute_file": "ctx_execute_file",
+    "mcp__mcp_context_forge__ctx_batch_execute": "ctx_batch_execute",
+    "mcp__mcp_context_forge__ctx_index": "ctx_index",
+    "mcp__mcp_context_forge__ctx_content_search": "ctx_content_search",
+    "mcp__mcp_context_forge__ctx_content_stats": "ctx_content_stats",
+    "mcp__mcp_context_forge__ctx_runtimes": "ctx_runtimes",
+    "mcp__mcp_context_forge__ctx_ping": "ctx_ping",
+    "mcp__mcp_context_forge__ctx_doctor": "ctx_doctor",
+    "mcp__mcp_context_forge__ctx_health": "ctx_health",
+    "mcp__mcp_context_forge__ctx_recall": "ctx_recall",
+    "mcp__mcp_context_forge__ctx_fetch": "ctx_fetch",
+    "mcp__mcp_context_forge__ctx_purge": "ctx_purge",
+    "mcp__mcp_context_forge__ctx_session": "ctx_session",
+    "mcp__mcp_context_forge__ctx_summary_search": "ctx_summary_search",
+    "mcp__mcp_context_forge__ctx_summary_list": "ctx_summary_list",
+    "mcp__mcp_context_forge__ctx_summary_get": "ctx_summary_get",
+    "mcp__mcp_context_forge__ctx_summary_messages": "ctx_summary_messages",
 };
 /**
  * Normalize a tool name to canonical form.
@@ -57,7 +76,7 @@ export function normalizeToolName(name) {
  * Check if a tool name is an external MCP tool (not ctx_plugin).
  */
 export function isExternalMcpTool(name) {
-    if (name.startsWith("mcp__") && !name.includes("ctx_plugin"))
+    if (name.startsWith("mcp__") && !name.includes("ctx_plugin") && !name.includes("mcp_context_forge"))
         return true;
     if (name.startsWith("MCP:") && !name.startsWith("MCP:ctx_"))
         return true;
@@ -70,7 +89,9 @@ export function isExternalMcpTool(name) {
  */
 export function isCtxPluginTool(name) {
     return (name.startsWith("ctx_") ||
+        name.startsWith("summary_") ||
         name.startsWith("mcp__ctx_plugin__") ||
+        name.startsWith("mcp__mcp_context_forge__") ||
         name.startsWith("MCP:ctx_"));
 }
 /**

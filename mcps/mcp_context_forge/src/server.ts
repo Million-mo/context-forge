@@ -27,7 +27,7 @@ import {
   createLLMClient,
   type OpenAIClient,
 } from "@context-forge/shared-types";
-import { buildRecallPrompt } from "../../mcp_ctx_summary/src/recall-prompts.js";
+import { buildRecallPrompt } from "./recall-prompts.js";
 
 // ── Execution & indexing (from mcp_ctx_tool) ──────────────────────────────────
 
@@ -343,7 +343,7 @@ server.server.setRequestHandler(ListToolsRequestSchema, async () => {
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
     },
     {
-      name: "summary_health",
+      name: "ctx_health",
       description: "Database statistics for summaries.db (total summaries, sessions, messages, DB size) and LLM recall status",
       inputSchema: { type: "object", properties: {} },
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
@@ -418,7 +418,7 @@ server.server.setRequestHandler(ListToolsRequestSchema, async () => {
   tools.push(
     {
       name: "ctx_index",
-      description: "Index file or content into searchable FTS5 store. Indexed content can be searched with ctx_search.",
+      description: "Index file or content into searchable FTS5 store. Indexed content can be searched with ctx_content_search.",
       inputSchema: {
         type: "object",
         properties: { content: { type: "string" }, path: { type: "string" }, source: { type: "string" } },
@@ -426,8 +426,8 @@ server.server.setRequestHandler(ListToolsRequestSchema, async () => {
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
     },
     {
-      name: "ctx_search",
-      description: "BM25 + trigram RRF fusion search across indexed content (files, web pages). For searching conversation summaries, use summary_search.",
+      name: "ctx_content_search",
+      description: "BM25 + trigram RRF fusion search across indexed content (files, web pages). For searching conversation summaries, use ctx_summary_search.",
       inputSchema: {
         type: "object",
         properties: {
@@ -441,7 +441,7 @@ server.server.setRequestHandler(ListToolsRequestSchema, async () => {
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
     {
-      name: "ctx_fetch_and_index",
+      name: "ctx_fetch",
       description: "Fetch web content and index it for search",
       inputSchema: {
         type: "object",
@@ -451,7 +451,7 @@ server.server.setRequestHandler(ListToolsRequestSchema, async () => {
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
     },
     {
-      name: "ctx_stats",
+      name: "ctx_content_stats",
       description: "Get content store statistics (total sources, chunks, DB size)",
       inputSchema: { type: "object", properties: {} },
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
@@ -463,7 +463,7 @@ server.server.setRequestHandler(ListToolsRequestSchema, async () => {
   if (FEATURES.memory) {
     tools.push(
       {
-        name: "summary_recall",
+        name: "ctx_recall",
         description: "Intent-driven recall: search conversation history by natural language query, returns LLM-generated context summary. Use this to answer 'what did we do earlier?'",
         inputSchema: {
           type: "object",
@@ -477,8 +477,8 @@ server.server.setRequestHandler(ListToolsRequestSchema, async () => {
         annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: true },
       },
       {
-        name: "summary_search",
-        description: "FTS5 full-text search across turn summaries. For searching indexed files/content, use ctx_search.",
+        name: "ctx_summary_search",
+        description: "FTS5 full-text search across turn summaries. For searching indexed files/content, use ctx_content_search.",
         inputSchema: {
           type: "object",
           properties: {
@@ -491,7 +491,7 @@ server.server.setRequestHandler(ListToolsRequestSchema, async () => {
         annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       },
       {
-        name: "summary_list",
+        name: "ctx_summary_list",
         description: "List all summaries for a specific session in turn order",
         inputSchema: {
           type: "object",
@@ -501,7 +501,7 @@ server.server.setRequestHandler(ListToolsRequestSchema, async () => {
         annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       },
       {
-        name: "summary_get",
+        name: "ctx_summary_get",
         description: "Get a single turn summary by session ID and turn index",
         inputSchema: {
           type: "object",
@@ -511,7 +511,7 @@ server.server.setRequestHandler(ListToolsRequestSchema, async () => {
         annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       },
       {
-        name: "summary_messages",
+        name: "ctx_summary_messages",
         description: "Get raw messages for a specific turn (lossless recall)",
         inputSchema: {
           type: "object",
@@ -615,7 +615,7 @@ server.server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return { content: [{ type: "text", text: `Purged ${purged} old sessions from ${getSessionDbPath()}` }] };
     }
 
-    if (name === "summary_health") {
+    if (name === "ctx_health") {
       if (!FEATURES.memory) {
         return { content: [{ type: "text", text: "Memory feature disabled (CTX_DISABLE_MEMORY=1)" }], isError: true };
       }
@@ -671,7 +671,7 @@ server.server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return { content: [{ type: "text", text: `Invalid arguments: ${parsed.error.message}` }], isError: true };
       }
       const result = await getExecutor().batchExecute({
-        commands: parsed.data.commands as Array<{ language: string; code: string }>,
+        commands: parsed.data.commands as Array<{ language: import("../../mcp_ctx_tool/src/types.js").Language; code: string }>,
         sequential: parsed.data.sequential,
         stopOnError: parsed.data.stopOnError,
       });
@@ -712,7 +712,7 @@ server.server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return { content: [{ type: "text", text: "Provide either 'path' or 'content'" }], isError: true };
     }
 
-    if (name === "ctx_search") {
+    if (name === "ctx_content_search") {
       const parsed = SearchSchema.safeParse(args);
       if (!parsed.success) {
         return { content: [{ type: "text", text: `Invalid arguments: ${parsed.error.message}` }], isError: true };
@@ -724,7 +724,7 @@ server.server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return { content: [{ type: "text", text: JSON.stringify(results, null, 2) }] };
     }
 
-    if (name === "ctx_fetch_and_index") {
+    if (name === "ctx_fetch") {
       const parsed = FetchAndIndexSchema.safeParse(args);
       if (!parsed.success) {
         return { content: [{ type: "text", text: `Invalid arguments: ${parsed.error.message}` }], isError: true };
@@ -759,14 +759,14 @@ server.server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
     }
 
-    if (name === "ctx_stats") {
+    if (name === "ctx_content_stats") {
       const stats = getStore().getStats();
       return { content: [{ type: "text", text: JSON.stringify(stats, null, 2) }] };
     }
 
     // ── memory ──────────────────────────────────────────────────────
 
-    if (name === "summary_recall") {
+    if (name === "ctx_recall") {
       if (!FEATURES.memory) {
         return { content: [{ type: "text", text: "Memory feature disabled (CTX_DISABLE_MEMORY=1)" }], isError: true };
       }
@@ -775,7 +775,7 @@ server.server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
     }
 
-    if (name === "summary_search") {
+    if (name === "ctx_summary_search") {
       if (!FEATURES.memory) {
         return { content: [{ type: "text", text: "Memory feature disabled" }], isError: true };
       }
@@ -786,7 +786,7 @@ server.server.setRequestHandler(CallToolRequestSchema, async (request) => {
       };
     }
 
-    if (name === "summary_list") {
+    if (name === "ctx_summary_list") {
       if (!FEATURES.memory) {
         return { content: [{ type: "text", text: "Memory feature disabled" }], isError: true };
       }
@@ -797,7 +797,7 @@ server.server.setRequestHandler(CallToolRequestSchema, async (request) => {
       };
     }
 
-    if (name === "summary_get") {
+    if (name === "ctx_summary_get") {
       if (!FEATURES.memory) {
         return { content: [{ type: "text", text: "Memory feature disabled" }], isError: true };
       }
@@ -814,7 +814,7 @@ server.server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return { content: [{ type: "text", text: JSON.stringify({ summary }, null, 2) }] };
     }
 
-    if (name === "summary_messages") {
+    if (name === "ctx_summary_messages") {
       if (!FEATURES.memory) {
         return { content: [{ type: "text", text: "Memory feature disabled" }], isError: true };
       }

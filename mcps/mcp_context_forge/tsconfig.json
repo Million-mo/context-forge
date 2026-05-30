@@ -4,5 +4,16 @@
     "outDir": "./dist",
     "rootDir": "./src"
   },
-  "include": ["src/**/*.ts"]
+  "include": [
+    "src/install.ts",
+    "src/server.ts",
+    "src/recall-prompts.ts",
+    "src/summary-queries.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "../mcp_ctx_tool",
+    "../mcp_ctx_summary"
+  ],
+  "references": []
 }

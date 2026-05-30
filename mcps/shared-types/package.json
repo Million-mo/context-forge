@@ -37,6 +37,14 @@
     "./llm-client": {
       "types": "./dist/llm-client.d.ts",
       "import": "./dist/llm-client.js"
+    },
+    "./summary-types": {
+      "types": "./dist/summary-types.d.ts",
+      "import": "./dist/summary-types.js"
+    },
+    "./session": {
+      "types": "./dist/session.d.ts",
+      "import": "./dist/session.js"
     }
   },
   "scripts": {

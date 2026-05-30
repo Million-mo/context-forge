@@ -5,11 +5,10 @@
  * stores in SQLite FTS5, and retrieves via BM25-ranked search.
  */
 
-import { Database } from "@context-forge/shared-types/db";
+import { Database, getContentDbPath } from "@context-forge/shared-types";
 import { createHash } from "node:crypto";
 import { readFileSync, existsSync, statSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import { getContentDbPath } from "@context-forge/shared-types";
 
 export interface SearchResult {
   title: string;

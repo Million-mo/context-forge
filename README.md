@@ -51,19 +51,19 @@ A single unified MCP server — `mcp_context_forge` — combines execution, cont
 | | `ctx_batch_execute` | 批量顺序/并行执行 |
 | | `ctx_runtimes` | 列出可用运行时及版本 |
 | **index** | `ctx_index` | 将文件或文本索引到 FTS5 存储 |
-| | `ctx_search` | BM25 + trigram RRF 融合搜索 |
-| | `ctx_fetch_and_index` | 抓取网页内容并索引 |
-| | `ctx_stats` | 存储统计信息 |
-| **memory** | `summary_recall` | 意图驱动的 LLM 语义召回 |
-| | `summary_search` | FTS5 全文搜索摘要 |
-| | `summary_list` | 列出某会话的所有摘要 |
-| | `summary_get` | 按会话 ID 和轮次获取单个摘要 |
-| | `summary_messages` | 获取某轮次的原始消息（无损） |
+| | `ctx_content_search` | BM25 + trigram RRF 融合搜索 |
+| | `ctx_fetch` | 抓取网页内容并索引 |
+| | `ctx_content_stats` | 存储统计信息 |
+| **memory** | `ctx_recall` | 意图驱动的 LLM 语义召回 |
+| | `ctx_summary_search` | FTS5 全文搜索摘要 |
+| | `ctx_summary_list` | 列出某会话的所有摘要 |
+| | `ctx_summary_get` | 按会话 ID 和轮次获取单个摘要 |
+| | `ctx_summary_messages` | 获取某轮次的原始消息（无损） |
 | | `ctx_session` | 会话分析 + resume 快照 |
 | **infra** | `ctx_doctor` | 系统诊断 |
 | | `ctx_ping` | 健康检查 |
 | | `ctx_purge` | 清理会话数据 |
-| | `summary_health` | 摘要 DB 统计 |
+| | `ctx_health` | 摘要 DB 统计 |
 
 **支持语言：** `javascript`, `typescript`, `python`, `shell`, `ruby`, `go`, `rust`, `php`, `perl`, `r`, `elixir`
 

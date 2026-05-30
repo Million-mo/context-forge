@@ -6,7 +6,7 @@
  *
  * The snapshot is a lightweight "table of contents" — it lists what happened
  * without embedding raw data, keeping token cost minimal. For full details
- * the model can use ctx_search on the indexed session events.
+ * the model can use ctx_content_search on the indexed session events.
  */
 
 import type { StoredEvent } from "../session-db.js";
@@ -135,7 +135,7 @@ export function buildResumeSnapshot(
   if (events.length === 0) return "";
 
   const compactCount = opts?.compactCount ?? 1;
-  const searchTool = opts?.searchTool ?? "ctx_search";
+  const searchTool = opts?.searchTool ?? "ctx_content_search";
 
   // Group by category
   const byCategory: Record<string, StoredEvent[]> = {};

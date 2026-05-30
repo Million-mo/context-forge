@@ -143,7 +143,7 @@ ctx_plugin/
 - Added `install-routing.js` and `--routing` CLI flag
 
 ### v0.2.0
-- Added `ctx_fetch_and_index` tool for web content indexing
+- Added `ctx_fetch` tool for web content indexing
 - Added `ctx_doctor` tool for system diagnostics
 - Improved BM25 + trigram RRF fusion search
 - Added Rust compilation-and-run support

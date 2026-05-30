@@ -121,9 +121,9 @@
 | `ctx_batch_execute` | 批量执行（顺序/并行可选） |
 | `ctx_runtimes` | 列出可用运行时 |
 | `ctx_index` | 索引文件或内容 |
-| `ctx_search` | BM25 + trigram RRF 融合搜索 |
-| `ctx_stats` | 内容库统计 |
-| `ctx_fetch_and_index` | 抓取网页并索引 |
+| `ctx_content_search` | BM25 + trigram RRF 融合搜索 |
+| `ctx_content_stats` | 内容库统计 |
+| `ctx_fetch` | 抓取网页并索引 |
 | `ctx_purge` | 清理会话数据 |
 | `ctx_doctor` | 系统诊断 |
 
@@ -141,12 +141,12 @@
 
 | 工具 | 功能 |
 |---|---|
-| `summary_recall` | 意图驱动 LLM 召回 |
-| `summary_search` | FTS5 全文搜索摘要 |
-| `summary_list` | 列出会话所有摘要 |
-| `summary_get` | 获取单轮摘要 |
-| `summary_messages` | 获取原始消息 |
-| `summary_health` | 健康检查 + DB 统计 |
+| `ctx_recall` | 意图驱动 LLM 召回 |
+| `ctx_summary_search` | FTS5 全文搜索摘要 |
+| `ctx_summary_list` | 列出会话所有摘要 |
+| `ctx_summary_get` | 获取单轮摘要 |
+| `ctx_summary_messages` | 获取原始消息 |
+| `ctx_health` | 健康检查 + DB 统计 |
 
 ### 3.3 transform 插件
 
@@ -244,8 +244,8 @@ opencode 会话
     │                ─→ 会话事件记录
     │
     └─ mcp_ctx_summary ─→ 读取 summaries.db
-                        ─→ summary_recall（LLM 意图召回）
-                        ─→ summary_search（FTS5 搜索）
+                        ─→ ctx_recall（LLM 意图召回）
+                        ─→ ctx_summary_search（FTS5 搜索）
 ```
 
 ---

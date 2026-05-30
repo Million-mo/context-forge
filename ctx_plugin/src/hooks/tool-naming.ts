@@ -79,7 +79,7 @@ export function normalizeToolName(name: string): string {
  * Check if a tool name is an external MCP tool (not ctx_plugin).
  */
 export function isExternalMcpTool(name: string): boolean {
-  if (name.startsWith("mcp__") && !name.includes("ctx_plugin")) return true;
+  if (name.startsWith("mcp__") && !name.includes("ctx_plugin") && !name.includes("mcp_context_forge")) return true;
   if (name.startsWith("MCP:") && !name.startsWith("MCP:ctx_")) return true;
   if (/^@\w+\//.test(name)) return true;
   return false;

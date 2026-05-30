@@ -51,13 +51,13 @@ export function saveOpencodeConfig(config: OpencodeConfig, label: string): void 
   console.log(`[${label}] Updated ${configPath}`)
 }
 
-export function registerMcp(logLabel: string, serverName: string, serverPath: string): void {
+export function registerMcp(logLabel: string, serverName: string, serverPath: string, command?: string[]): void {
   const config = loadOpencodeConfig()
   if (!config.mcp) config.mcp = {}
 
   config.mcp[serverName] = {
     type: "local",
-    command: ["node", serverPath],
+    command: command ?? ["node", serverPath],
   }
 
   saveOpencodeConfig(config, logLabel)

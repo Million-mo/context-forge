@@ -13,11 +13,13 @@ import { registerMcp, unregisterMcp } from "@context-forge/shared-types/install-
 const LABEL = "mcp_context_forge";
 const SERVER_NAME = "mcp_context_forge";
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const serverPath = resolve(__dirname, "server.js");
+
+// Use npx tsx to run TypeScript source (cross-package imports require tsx)
+const serverSource = resolve(__dirname, "..", "src", "server.ts");
 
 const args = process.argv.slice(2);
 if (args.includes("--uninstall")) {
   unregisterMcp(LABEL, SERVER_NAME);
 } else {
-  registerMcp(LABEL, SERVER_NAME, serverPath);
+  registerMcp(LABEL, SERVER_NAME, serverSource, ["npx", "tsx", serverSource]);
 }
