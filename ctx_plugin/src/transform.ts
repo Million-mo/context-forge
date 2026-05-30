@@ -190,79 +190,11 @@ function validateLLMConfig(): void {
 // ─── SQLite Store ────────────────────────────────────────────────────────────
 
 /**
- * ⚠️ Keep in sync with @context-forge/shared-types/schema.
- * This is a copy because transform.ts runs as an opencode plugin
- * and cannot import from the npm workspace at runtime.
+ * Schema is injected at build time from @context-forge/shared-types/schema.
+ * See bin/build-plugins.mjs — it replaces __CTX_SUMMARIES_SCHEMA__ with
+ * the canonical SUMMARIES_DB_SCHEMA export.
  */
-const SCHEMA = `
-CREATE TABLE IF NOT EXISTS global_summary_cache (
-  content_hash TEXT NOT NULL PRIMARY KEY,
-  overview TEXT NOT NULL,
-  intent TEXT NOT NULL,
-  actions_json TEXT NOT NULL DEFAULT '[]',
-  artifacts_json TEXT NOT NULL DEFAULT '[]',
-  outcome TEXT NOT NULL DEFAULT 'unknown',
-  errors_json TEXT NOT NULL DEFAULT '[]',
-  todos_json TEXT NOT NULL DEFAULT '[]',
-  confidence REAL NOT NULL DEFAULT 0.5,
-  reason TEXT,
-  generated_at INTEGER NOT NULL,
-  tokens_used INTEGER DEFAULT 0,
-  hit_count INTEGER NOT NULL DEFAULT 1,
-  last_hit_at INTEGER NOT NULL,
-  start_msg_id TEXT NOT NULL,
-  end_msg_id TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS session_turn_summaries (
-  session_id TEXT NOT NULL,
-  turn_index INTEGER NOT NULL,
-  content_hash TEXT NOT NULL,
-  PRIMARY KEY (session_id, turn_index)
-);
-
-CREATE INDEX IF NOT EXISTS idx_session_summaries_hash ON session_turn_summaries(content_hash);
-CREATE INDEX IF NOT EXISTS idx_session_summaries_session ON session_turn_summaries(session_id);
-
-CREATE VIRTUAL TABLE IF NOT EXISTS summaries_fts USING fts5(
-  content_hash UNINDEXED,
-  overview,
-  intent,
-  outcome,
-  content='global_summary_cache',
-  content_rowid='rowid'
-);
-
-CREATE TRIGGER IF NOT EXISTS summaries_ai AFTER INSERT ON global_summary_cache BEGIN
-  INSERT INTO summaries_fts(rowid, content_hash, overview, intent, outcome)
-  VALUES (new.rowid, new.content_hash, new.overview, new.intent, new.outcome);
-END;
-
-CREATE TRIGGER IF NOT EXISTS summaries_ad AFTER DELETE ON global_summary_cache BEGIN
-  INSERT INTO summaries_fts(summaries_fts, rowid, content_hash, overview, intent, outcome)
-  VALUES ('delete', old.rowid, old.content_hash, old.overview, old.intent, old.outcome);
-END;
-
-CREATE TRIGGER IF NOT EXISTS summaries_au AFTER UPDATE ON global_summary_cache BEGIN
-  INSERT INTO summaries_fts(summaries_fts, rowid, content_hash, overview, intent, outcome)
-  VALUES ('delete', old.rowid, old.content_hash, old.overview, old.intent, old.outcome);
-  INSERT INTO summaries_fts(rowid, content_hash, overview, intent, outcome)
-  VALUES (new.rowid, new.content_hash, new.overview, new.intent, new.outcome);
-END;
-
-CREATE TABLE IF NOT EXISTS turn_messages (
-  msg_id TEXT NOT NULL,
-  session_id TEXT NOT NULL,
-  turn_index INTEGER NOT NULL,
-  role TEXT NOT NULL,
-  content TEXT NOT NULL,
-  tool_calls TEXT,
-  created_at INTEGER NOT NULL,
-  seq_in_turn INTEGER NOT NULL,
-  PRIMARY KEY (msg_id)
-);
-CREATE INDEX IF NOT EXISTS idx_turn_messages_lookup ON turn_messages(session_id, turn_index, seq_in_turn);
-`
+const SCHEMA = `__CTX_SUMMARIES_SCHEMA__`
 
 class SummaryStore {
   private db: any
@@ -1119,6 +1051,54 @@ function detectHistoryQuery(parts: any[]): string | null {
   return null
 }
 
+// ─── Session Snapshot from DB1 ──────────────────────────────────────────────
+
+/**
+ * Load the latest resume snapshot from the session DB (DB1).
+ * Best-effort — returns "" if DB1 doesn't exist or is unreadable.
+ *
+ * The session DB path follows the same convention as
+ * mcp_ctx_tool's session-db.ts: ~/.local/share/ctx_plugin/sessions/<hash>.db
+ */
+function loadSessionSnapshot(): string {
+  try {
+    const hash = createHash("sha256")
+      .update(process.cwd().toLowerCase())
+      .digest("hex")
+      .slice(0, 16)
+
+    const sessionsDir = process.env.CTX_PLUGIN_DATA_DIR
+      || (process.env.XDG_DATA_HOME
+        ? resolve(process.env.XDG_DATA_HOME, "ctx_plugin")
+        : resolve(homedir(), ".local", "share", "ctx_plugin"))
+
+    const dbPath = resolve(sessionsDir, "sessions", `${hash}.db`)
+    if (!existsSync(dbPath)) return ""
+
+    const sessionDb = new DatabaseSync(dbPath)
+
+    try {
+      // Find the latest unconsumed snapshot
+      const row = sessionDb.prepare(
+        "SELECT id, snapshot FROM session_resume WHERE consumed = 0 ORDER BY created_at DESC LIMIT 1"
+      ).get() as { id?: number; snapshot?: string } | undefined
+
+      if (row?.snapshot && row.id != null) {
+        // Mark only THIS row as consumed — avoid discarding other sessions' snapshots
+        sessionDb.prepare(
+          "UPDATE session_resume SET consumed = 1 WHERE id = ?"
+        ).run(row.id)
+        return row.snapshot
+      }
+      return ""
+    } finally {
+      sessionDb.close()
+    }
+  } catch {
+    return ""
+  }
+}
+
 // ─── Plugin ─────────────────────────────────────────────────────────────────
 
 validateLLMConfig()
@@ -1146,23 +1126,45 @@ export const TransformPlugin = () => ({
     if (!query) return
 
     const results = getStore().search(query, 3)
-    if (results.length === 0) return
 
-    const injected = results.map((s) => ({
+    // Also load DB1 session snapshot for factual state (files, git, decisions)
+    let sessionSnapshot = ""
+    try {
+      sessionSnapshot = loadSessionSnapshot()
+    } catch {
+      // best-effort — DB1 may not be available
+    }
+
+    if (results.length === 0 && !sessionSnapshot) return
+
+    const contextParts: string[] = []
+
+    // DB1 snapshot first (factual state: files, git, decisions)
+    if (sessionSnapshot) {
+      contextParts.push(sessionSnapshot)
+    }
+
+    // DB3 summaries second (semantic: what was done)
+    if (results.length > 0) {
+      contextParts.push(
+        `=== Historical Context (LLM Summaries) ===\n` +
+        results.map((s) =>
+          `[Turn ${s.turnIndex}] ${s.overview}${s.intent ? ` | Intent: ${s.intent}` : ""}${s.outcome ? ` | ${s.outcome}` : ""}`
+        ).join("\n")
+      )
+    }
+
+    const injected = contextParts.map((text) => ({
       role: "system" as const,
       info: { role: "system", __transformInjected: true },
-      parts: [{
-        type: "text" as const,
-        text: `=== Historical Context ===\n` +
-          `[Turn ${s.turnIndex}] ${s.overview}${s.intent ? ` | Intent: ${s.intent}` : ""}${s.outcome ? ` | ${s.outcome}` : ""}`,
-      }],
+      parts: [{ type: "text" as const, text }],
     }))
 
     const insertAt = messages.length - 1
     output.messages.splice(insertAt, 0, ...injected)
 
     log.info(
-      `Injected ${injected.length} history blocks, ` +
+      `Injected ${injected.length} history blocks (DB3 summaries + ${sessionSnapshot ? "DB1 snapshot" : "no snapshot"}), ` +
       `compression=${sourceTokens}→${compressedTokens} (${reduction})`
     )
   },

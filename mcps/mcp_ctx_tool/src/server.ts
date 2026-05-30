@@ -17,7 +17,23 @@ import { z } from "zod";
 import { PolyglotExecutor } from "./executor.js";
 import { getAvailableLanguages, getRuntimeSummary, getRuntimeInfo } from "./runtime.js";
 import { ContentStore } from "./store.js";
-import { initSessionDb, cleanupOldSessions, deleteSession, getSessionDbPath } from "./session-db.js";
+import {
+  initSessionDb,
+  cleanupOldSessions,
+  deleteSession,
+  getSessionDbPath,
+  insertEvent,
+  ensureSession,
+  getLatestSessionId,
+  getEvents,
+  upsertResume,
+  getResume,
+  incrementCompactCount,
+  type SessionEvent,
+} from "./session-db.js";
+import { extractToolCall, type ToolCallInfo } from "./session/extract.js";
+import { buildResumeSnapshot } from "./session/snapshot.js";
+import { querySessionAnalytics, formatReport } from "./session/analytics.js";
 
 const VERSION = "0.3.0";
 
@@ -45,6 +61,38 @@ function getStore(): ContentStore {
     contentStore = new ContentStore(getProjectDir());
   }
   return contentStore;
+}
+
+/**
+ * Record a tool call as a classified session event.
+ * Best-effort — never throws, never blocks the parent call.
+ */
+function recordToolEvent(
+  toolName: string,
+  toolInput: Record<string, unknown>,
+  toolResponse: string,
+  isError: boolean,
+): void {
+  try {
+    const projectDir = getProjectDir();
+    initSessionDb(projectDir);
+    // Use latest existing session for this project, or create a new one.
+    const existingSid = getLatestSessionId();
+    const sid = existingSid ?? `session-${Date.now()}`;
+    if (!existingSid) {
+      // Fresh session — register it so future events find it
+      ensureSession(sid, projectDir);
+    }
+
+    const call: ToolCallInfo = { toolName, toolInput, toolResponse, isError };
+    const events = extractToolCall(sid, call, projectDir);
+
+    for (const ev of events) {
+      insertEvent(ev);
+    }
+  } catch {
+    // best-effort only
+  }
 }
 
 server.server.setRequestHandler(ListPromptsRequestSchema, async () => ({ prompts: [] }));
@@ -401,6 +449,12 @@ server.server.setRequestHandler(ListToolsRequestSchema, async () => ({
       inputSchema: { type: "object", properties: { sessionId: { type: "string" }, daysOld: { type: "number" } } },
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
     },
+    {
+      name: "ctx_session",
+      description: "Session analytics — events tracked, categories, tool stats, and context savings",
+      inputSchema: { type: "object", properties: { sessionId: { type: "string", description: "Optional session ID (defaults to latest)" } } },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
   ],
 }));
 
@@ -419,6 +473,7 @@ server.server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
       const { language, code, timeout } = parsed.data;
       const result = await executor.execute({ language, code, timeout: timeout ?? 30000 });
+      recordToolEvent("ctx_execute", { language, code }, JSON.stringify(result), result.exitCode !== 0);
       return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
     }
 
@@ -435,12 +490,15 @@ server.server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return { content: [{ type: "text", text: `Invalid arguments: ${parsed.error.message}` }], isError: true };
       }
       const store = getStore();
+      let result;
       if (parsed.data.path) {
-        const result = await store.indexFile(parsed.data.path, { source: parsed.data.source });
+        result = await store.indexFile(parsed.data.path, { source: parsed.data.source });
+        recordToolEvent("ctx_index", { path: parsed.data.path }, JSON.stringify(result), false);
         return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       }
       if (parsed.data.content) {
-        const result = await store.index(parsed.data.content, { source: parsed.data.source });
+        result = await store.index(parsed.data.content, { source: parsed.data.source });
+        recordToolEvent("ctx_index", { content: parsed.data.content.slice(0, 100) }, JSON.stringify(result), false);
         return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       }
       return { content: [{ type: "text", text: "Provide either 'path' or 'content'" }], isError: true };
@@ -456,6 +514,7 @@ server.server.setRequestHandler(CallToolRequestSchema, async (request) => {
         source: parsed.data.source,
         contentType: parsed.data.contentType,
       });
+      recordToolEvent("ctx_search", { query: parsed.data.query, limit: parsed.data.limit }, `${results.length} results`, false);
       return { content: [{ type: "text", text: JSON.stringify(results, null, 2) }] };
     }
 
@@ -569,6 +628,40 @@ server.server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
       const purged = cleanupOldSessions(parsed.success ? (parsed.data.daysOld ?? 0) : 0);
       return { content: [{ type: "text", text: `Purged ${purged} old sessions from ${getSessionDbPath()}` }] };
+    }
+
+    if (name === "ctx_session") {
+      initSessionDb(getProjectDir());
+      const sesId = (args as Record<string, unknown> | null)?.sessionId as string | undefined;
+      const sessionId = sesId || getLatestSessionId();
+      if (!sessionId) {
+        return { content: [{ type: "text", text: "No session found. Run ctx_execute or another tool first to create a session." }], isError: true };
+      }
+
+      const analytics = querySessionAnalytics(sessionId);
+      if (!analytics) {
+        return { content: [{ type: "text", text: `Session ${sessionId} not found` }], isError: true };
+      }
+
+      const report = formatReport(analytics);
+
+      // Build and store snapshot for resume injection
+      const events = getEvents(sessionId, { limit: 1000 });
+      if (events.length > 0) {
+        const newCompactCount = analytics.compactCount + 1;
+        incrementCompactCount(sessionId);
+        const snapshot = buildResumeSnapshot(events, { compactCount: newCompactCount });
+        if (snapshot) {
+          upsertResume(sessionId, snapshot, events.length);
+        }
+      }
+
+      return {
+        content: [
+          { type: "text", text: report },
+          { type: "text", text: JSON.stringify(analytics, null, 2) },
+        ],
+      };
     }
 
     return { content: [{ type: "text", text: `Unknown tool: ${name}` }], isError: true };

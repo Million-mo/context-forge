@@ -8,7 +8,8 @@
 import { Database } from "./db-base.js";
 import { createHash } from "node:crypto";
 import { readFileSync, existsSync, statSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { dirname } from "node:path";
+import { getContentDbPath } from "@context-forge/shared-types";
 
 export interface SearchResult {
   title: string;
@@ -147,11 +148,11 @@ export class ContentStore {
   #dbPath: string;
 
   constructor(projectDir: string) {
-    const dbDir = join(projectDir, ".mcp_ctx_tool");
+    this.#dbPath = getContentDbPath(projectDir);
+    const dbDir = dirname(this.#dbPath);
     if (!existsSync(dbDir)) {
       mkdirSync(dbDir, { recursive: true });
     }
-    this.#dbPath = join(dbDir, "content.db");
     this.#db = new Database(this.#dbPath);
     this.#init();
   }

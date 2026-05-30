@@ -154,6 +154,26 @@ for (const plugin of PLUGINS) {
 
   code = stripTypes(code)
 
+  // Inject canonical schema for transform plugin (eliminates dual-maintenance)
+  if (plugin.name === "transform") {
+    const schemaTsPath = resolve(ROOT, "..", "mcps", "shared-types", "src", "schema.ts")
+    if (existsSync(schemaTsPath)) {
+      const schemaTs = readFileSync(schemaTsPath, "utf8")
+      const match = schemaTs.match(/export const SUMMARIES_DB_SCHEMA = `([\s\S]*?)`;/)
+      if (match) {
+        const canonicalSchema = match[1]
+        code = code.replace(/`__CTX_SUMMARIES_SCHEMA__`/, "`" + canonicalSchema + "`")
+        console.log(`  ✓ injected schema from shared-types`)
+      } else {
+        console.error(`  ⚠ could not extract SUMMARIES_DB_SCHEMA from schema.ts`)
+        process.exit(1)
+      }
+    } else {
+      console.error(`  ⚠ schema.ts not found at ${schemaTsPath}`)
+      process.exit(1)
+    }
+  }
+
   writeFileSync(plugin.outMjs, code, "utf8")
   console.log(`  ✓ ${plugin.name}.mjs → ${resolve(PLUGINS_OUT, plugin.name + ".mjs").replace(resolve(ROOT, "..") + "/", "")}`)
 }
