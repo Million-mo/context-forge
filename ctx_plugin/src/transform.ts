@@ -40,28 +40,16 @@ function isSQLiteCorruptionError(msg: string): boolean {
 function renameCorruptDB(dbPath: string): void {
   const { renameSync } = require("node:fs")
   const ts = Date.now()
-  for (const suffix of ["", "-wal", "-shm"]) {
-    try { renameSync(dbPath + suffix, `${dbPath}${suffix}.corrupt-${ts}`) } catch { /* ok */ }
-  }
+  try { renameSync(dbPath, `${dbPath}.corrupt-${ts}`) } catch { /* ok */ }
 }
 
-function cleanOrphanedWALFiles(dbPath: string): void {
-  if (!existsSync(dbPath)) {
-    const { unlinkSync } = require("node:fs")
-    for (const suffix of ["-wal", "-shm"]) {
-      try { unlinkSync(dbPath + suffix) } catch { /* ok */ }
-    }
-  }
-}
-
-function applyWALPragmas(db: any): void {
-  db.exec("PRAGMA journal_mode = WAL")
+function applyPragmas(db: any): void {
+  db.exec("PRAGMA journal_mode = DELETE")
   db.exec("PRAGMA synchronous = NORMAL")
-  try { db.exec("PRAGMA mmap_size = 268435456") } catch { /* unsupported */ }
+  db.exec("PRAGMA mmap_size = 268435456")
 }
 
 function openDatabase(dbPath: string): any {
-  cleanOrphanedWALFiles(dbPath)
   const { Database } = require("bun:sqlite")
   let db: any
   try {
@@ -70,20 +58,18 @@ function openDatabase(dbPath: string): any {
     const msg = err instanceof Error ? err.message : String(err)
     if (isSQLiteCorruptionError(msg)) {
       renameCorruptDB(dbPath)
-      cleanOrphanedWALFiles(dbPath)
       db = new Database(dbPath)
     } else {
       throw err
     }
   }
-  applyWALPragmas(db)
+  applyPragmas(db)
   return db
 }
 
 const _liveDBs = new Set<any>()
 process.on("exit", () => {
   for (const db of _liveDBs) {
-    try { db.exec("PRAGMA wal_checkpoint(TRUNCATE)") } catch { /* ok */ }
     try { db.close() } catch { /* ok */ }
   }
   _liveDBs.clear()
@@ -183,11 +169,10 @@ const SESSION_ID = process.env.SESSION_ID || "default"
 
 function getCtxPluginGlobalDir(): string {
   if (process.env.CTX_PLUGIN_CONFIG_DIR) return process.env.CTX_PLUGIN_CONFIG_DIR
-  if (process.env.XDG_CONFIG_HOME) return resolve(process.env.XDG_CONFIG_HOME, "ctx_plugin")
   if (process.platform === "win32") {
     return resolve(process.env.APPDATA || resolve(homedir(), "AppData", "Roaming"), "ctx_plugin")
   }
-  return resolve(homedir(), ".config", "ctx_plugin")
+  return resolve(homedir(), ".ctx_plugin")
 }
 
 function loadLLMConfigFromFile() {
@@ -243,35 +228,10 @@ const SCHEMA = `__CTX_SUMMARIES_SCHEMA__`
 
 class SummaryStore {
   private db: any
-  private dbPath: string
-  private saveTimer: ReturnType<typeof setTimeout> | null = null
 
-  constructor(db: any, dbPath: string) {
+  constructor(db: any) {
     this.db = db
-    this.dbPath = dbPath
     this.db.exec(SCHEMA)
-  }
-
-  private scheduleSave(): void {
-    if (this.saveTimer) return
-    this.saveTimer = setTimeout(() => {
-      this.saveTimer = null
-      this.persist()
-    }, 500)
-  }
-
-  private persist(): void {
-    try {
-      // VACUUM INTO gives atomic backup writes — no corruption risk
-      const tmpPath = this.dbPath + ".tmp"
-      this.db.exec(`VACUUM INTO '${tmpPath}'`)
-      // Replace live file atomically
-      const { renameSync, unlinkSync } = require("node:fs")
-      try { unlinkSync(this.dbPath) } catch { /* ignore if missing */ }
-      renameSync(tmpPath, this.dbPath)
-    } catch (err) {
-      log.warn("persist failed:", String(err))
-    }
   }
 
   getByHash(contentHash: string): TurnSummary | null {
@@ -298,9 +258,7 @@ class SummaryStore {
       VALUES
         (?, ?, ?, ?, ?,
          ?, ?, ?, ?, ?,
-         ?,
-         ?,
-         ?,
+         ?, ?, ?, ?,
          ?)
     `).run(
       contentHash,
@@ -325,8 +283,6 @@ class SummaryStore {
         (session_id, turn_index, content_hash)
       VALUES (?, ?, ?)
     `).run(sessionId, summary.turnIndex, contentHash)
-
-    this.scheduleSave()
   }
 
   insertMessages(sessionId: string, turnIndex: number, messages: any[]): void {
@@ -367,7 +323,6 @@ class SummaryStore {
         seq,
       )
     }
-    this.scheduleSave()
   }
 
   search(query: string, limit = 5): TurnSummary[] {
@@ -427,7 +382,7 @@ function getStore(): SummaryStore {
     const dbPath = resolve(DATA_DIR, "summaries.db")
     const db = openDatabase(dbPath)
     registerDB(db)
-    store = new SummaryStore(db, dbPath)
+    store = new SummaryStore(db)
   }
   return store
 }

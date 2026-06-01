@@ -22,34 +22,14 @@ function isSQLiteCorruptionError(msg) {
 function renameCorruptDB(dbPath) {
     const { renameSync } = require("node:fs");
     const ts = Date.now();
-    for (const suffix of ["", "-wal", "-shm"]) {
-        try {
-            renameSync(dbPath + suffix, `${dbPath}${suffix}.corrupt-${ts}`);
-        }
-        catch { /* ok */ }
-    }
+    try { renameSync(dbPath, `${dbPath}.corrupt-${ts}`); } catch { /* ok */ }
 }
-function cleanOrphanedWALFiles(dbPath) {
-    if (!existsSync(dbPath)) {
-        const { unlinkSync } = require("node:fs");
-        for (const suffix of ["-wal", "-shm"]) {
-            try {
-                unlinkSync(dbPath + suffix);
-            }
-            catch { /* ok */ }
-        }
-    }
-}
-function applyWALPragmas(db) {
-    db.exec("PRAGMA journal_mode = WAL");
+function applyPragmas(db) {
+    db.exec("PRAGMA journal_mode = DELETE");
     db.exec("PRAGMA synchronous = NORMAL");
-    try {
-        db.exec("PRAGMA mmap_size = 268435456");
-    }
-    catch { /* unsupported */ }
+    db.exec("PRAGMA mmap_size = 268435456");
 }
 function openDatabase(dbPath) {
-    cleanOrphanedWALFiles(dbPath);
     const { Database } = require("bun:sqlite");
     let db;
     try {
@@ -59,27 +39,19 @@ function openDatabase(dbPath) {
         const msg = err instanceof Error ? err.message : String(err);
         if (isSQLiteCorruptionError(msg)) {
             renameCorruptDB(dbPath);
-            cleanOrphanedWALFiles(dbPath);
             db = new Database(dbPath);
         }
         else {
             throw err;
         }
     }
-    applyWALPragmas(db);
+    applyPragmas(db);
     return db;
 }
 const _liveDBs = new Set();
 process.on("exit", () => {
     for (const db of _liveDBs) {
-        try {
-            db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
-        }
-        catch { /* ok */ }
-        try {
-            db.close();
-        }
-        catch { /* ok */ }
+        try { db.close(); } catch { /* ok */ }
     }
     _liveDBs.clear();
 });
@@ -143,12 +115,10 @@ const SESSION_ID = process.env.SESSION_ID || "default";
 function getCtxPluginGlobalDir() {
     if (process.env.CTX_PLUGIN_CONFIG_DIR)
         return process.env.CTX_PLUGIN_CONFIG_DIR;
-    if (process.env.XDG_CONFIG_HOME)
-        return resolve(process.env.XDG_CONFIG_HOME, "ctx_plugin");
     if (process.platform === "win32") {
         return resolve(process.env.APPDATA || resolve(homedir(), "AppData", "Roaming"), "ctx_plugin");
     }
-    return resolve(homedir(), ".config", "ctx_plugin");
+    return resolve(homedir(), ".ctx_plugin");
 }
 function loadLLMConfigFromFile() {
     // Priority: project .ctx_plugin/config.json > project config.json (legacy) > global ~/.ctx_plugin/config.json
@@ -267,37 +237,9 @@ CREATE INDEX IF NOT EXISTS idx_turn_messages_lookup ON turn_messages(session_id,
 `;
 class SummaryStore {
     db;
-    dbPath;
-    saveTimer = null;
-    constructor(db, dbPath) {
+    constructor(db) {
         this.db = db;
-        this.dbPath = dbPath;
         this.db.exec(SCHEMA);
-    }
-    scheduleSave() {
-        if (this.saveTimer)
-            return;
-        this.saveTimer = setTimeout(() => {
-            this.saveTimer = null;
-            this.persist();
-        }, 500);
-    }
-    persist() {
-        try {
-            // VACUUM INTO gives atomic backup writes — no corruption risk
-            const tmpPath = this.dbPath + ".tmp";
-            this.db.exec(`VACUUM INTO '${tmpPath}'`);
-            // Replace live file atomically
-            const { renameSync, unlinkSync } = require("node:fs");
-            try {
-                unlinkSync(this.dbPath);
-            }
-            catch { /* ignore if missing */ }
-            renameSync(tmpPath, this.dbPath);
-        }
-        catch (err) {
-            log.warn("persist failed:", String(err));
-        }
     }
     getByHash(contentHash) {
         const stmt = this.db.prepare("SELECT * FROM global_summary_cache WHERE content_hash = ?");
@@ -316,9 +258,7 @@ class SummaryStore {
       VALUES
         (?, ?, ?, ?, ?,
          ?, ?, ?, ?, ?,
-         ?,
-         ?,
-         ?,
+         ?, ?, ?, ?,
          ?)
     `).run(contentHash, summary.overview, summary.intent, JSON.stringify(summary.actions), JSON.stringify(summary.artifacts), summary.outcome, JSON.stringify(summary.errors), JSON.stringify(summary.todos), summary.confidence, summary.reason || null, summary.generatedAt, summary.tokensUsed || 0, Date.now(), summary.startMsgId, summary.endMsgId);
         this.db.prepare(`
@@ -326,7 +266,6 @@ class SummaryStore {
         (session_id, turn_index, content_hash)
       VALUES (?, ?, ?)
     `).run(sessionId, summary.turnIndex, contentHash);
-        this.scheduleSave();
     }
     insertMessages(sessionId, turnIndex, messages) {
         const stmt = this.db.prepare(`
@@ -354,7 +293,6 @@ class SummaryStore {
             }
             stmt.run(`${sessionId}-turn${turnIndex}-seq${seq}`, sessionId, turnIndex, role, textContent, toolCalls.length > 0 ? JSON.stringify(toolCalls) : null, msg?.timestamp || Date.now(), seq);
         }
-        this.scheduleSave();
     }
     search(query, limit = 5) {
         if (!query.trim())
@@ -410,7 +348,7 @@ function getStore() {
         const dbPath = resolve(DATA_DIR, "summaries.db");
         const db = openDatabase(dbPath);
         registerDB(db);
-        store = new SummaryStore(db, dbPath);
+        store = new SummaryStore(db);
     }
     return store;
 }
