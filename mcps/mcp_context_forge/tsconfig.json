@@ -5,15 +5,10 @@
     "rootDir": "./src"
   },
   "include": [
-    "src/install.ts",
-    "src/server.ts",
-    "src/recall-prompts.ts",
-    "src/summary-queries.ts"
+    "src/**/*"
   ],
   "exclude": [
     "node_modules",
-    "../mcp_ctx_tool",
-    "../mcp_ctx_summary"
-  ],
-  "references": []
+    "dist"
+  ]
 }
