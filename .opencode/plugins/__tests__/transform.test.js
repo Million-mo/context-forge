@@ -176,13 +176,13 @@ function buildSummaryReplacement(turn) {
   const s = turn.summary
   const timestamp = new Date(turn.messages[0]?.timestamp ?? Date.now()).toLocaleString()
   return [
-    { role: "user", info: { role: "user", __compressed: "summary", turnIndex: turn.index }, parts: [{ type: "text", text: `=== Turn ${turn.index} Summary (${timestamp}) ===\nCompressed: ${turn.messageCount} msgs, ~${turn.tokenEstimate} tokens.` }] },
-    { role: "assistant", info: { role: "assistant", __compressed: "summary", turnIndex: turn.index }, parts: [{ type: "text", text: s ? ["Turn " + turn.index + " Summary:", "Overview: " + s.overview, s.intent ? "Intent: " + s.intent : null, s.actions.length > 0 ? "Actions: " + s.actions.map((a) => a.tool + "(" + a.target + ")").join(", ") : null, s.artifacts.length > 0 ? "Artifacts: " + s.artifacts.map((a) => a.action + " " + a.path).join(", ") : null, "Outcome: " + s.outcome].filter(Boolean).join("\n") : "(Summary not yet generated)" }] },
+    { info: { role: "user", __compressed: "summary", turnIndex: turn.index }, parts: [{ type: "text", text: `=== Turn ${turn.index} Summary (${timestamp}) ===\nCompressed: ${turn.messageCount} msgs, ~${turn.tokenEstimate} tokens.` }] },
+    { info: { role: "assistant", __compressed: "summary", turnIndex: turn.index }, parts: [{ type: "text", text: s ? ["Turn " + turn.index + " Summary:", "Overview: " + s.overview, s.intent ? "Intent: " + s.intent : null, s.actions.length > 0 ? "Actions: " + s.actions.map((a) => a.tool + "(" + a.target + ")").join(", ") : null, s.artifacts.length > 0 ? "Artifacts: " + s.artifacts.map((a) => a.action + " " + a.path).join(", ") : null, "Outcome: " + s.outcome].filter(Boolean).join("\n") : "(Summary not yet generated)" }] },
   ]
 }
 
 function buildPlaceholderReplacement(turn) {
-  return [{ role: "user", info: { role: "user", __compressed: "placeholder", turnIndex: turn.index }, parts: [{ type: "text", text: "=== Turn " + turn.index + " (" + turn.messageCount + " msgs, ~" + turn.tokenEstimate + " tokens) ===\n[Compressed]" }] }]
+  return [{ info: { role: "user", __compressed: "placeholder", turnIndex: turn.index }, parts: [{ type: "text", text: "=== Turn " + turn.index + " (" + turn.messageCount + " msgs, ~" + turn.tokenEstimate + " tokens) ===\n[Compressed]" }] }]
 }
 
 function buildCompressedMessages(turns, toolOutputs) {
@@ -416,8 +416,8 @@ describe("buildSummaryReplacement", () => {
     const turn = makeTurn(1, [textMsg("user", "x")], false, "done", { turnIndex: 1, overview: "Fixed bug", intent: "Fix", actions: [], artifacts: [], outcome: "success", errors: [], todos: [], confidence: 0.9, generatedAt: Date.now() })
     const msgs = buildSummaryReplacement(turn)
     assert.strictEqual(msgs.length, 2)
-    assert.strictEqual(msgs[0].role, "user")
-    assert.strictEqual(msgs[1].role, "assistant")
+    assert.strictEqual(msgs[0].info.role, "user")
+    assert.strictEqual(msgs[1].info.role, "assistant")
   })
   test("marks with __compressed=summary", () => {
     const turn = makeTurn(3, [textMsg("user", "x")], false, "done", { turnIndex: 3, overview: "", intent: "", actions: [], artifacts: [], outcome: "success", errors: [], todos: [], confidence: 0.9, generatedAt: Date.now() })
@@ -521,7 +521,7 @@ describe("buildCompressedMessages", () => {
       makeTurn(2, [textMsg("user", "cur"), textMsg("assistant", "curreply")], true),
     ]
     const result = buildCompressedMessages(turns, new Map())
-    const t0 = result.find((m) => m.info?.turnIndex === 0 && m.role === "user")
+    const t0 = result.find((m) => m.info?.turnIndex === 0 && m.info?.role === "user")
     assert.strictEqual(t0?.info?.__compressed, "summary")
     assert.ok(!result.some((m) => m.parts?.[0]?.text?.includes("old" + large.slice(0, 10))))
     assert.ok(result.some((m) => m.parts?.[0]?.text === "curreply"))
@@ -535,7 +535,7 @@ describe("buildCompressedMessages", () => {
       makeTurn(1, [textMsg("user", "cur"), textMsg("assistant", "curreply")], true),
     ]
     const result = buildCompressedMessages(turns, new Map())
-    const t0 = result.find((m) => m.info?.turnIndex === 0 && m.role === "user")
+    const t0 = result.find((m) => m.info?.turnIndex === 0 && m.info?.role === "user")
     assert.strictEqual(t0?.info?.__compressed, "placeholder")
   })
   test("current turn always last", () => {

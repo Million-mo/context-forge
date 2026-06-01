@@ -8,14 +8,12 @@
 
 import { Database } from "@context-forge/shared-types";
 import { getSummariesDbPath } from "@context-forge/shared-types";
-import type {
-  Language,
-  RuntimeInfo,
-  RuntimeMap,
-  StoreStats,
-  IndexResult,
-  ExecResult,
-} from "./types.js";
+import { createHash } from "node:crypto";
+import { existsSync, statSync } from "node:fs";
+import { homedir } from "node:os";
+import { resolve, join } from "node:path";
+import { execFileSync } from "node:child_process";
+import type { Language, RuntimeInfo, RuntimeMap } from "./types.js";
 
 // ── Project dir ─────────────────────────────────────────────────────────────
 
@@ -80,7 +78,6 @@ export function getRuntimeInfo(language: Language): RuntimeInfo {
 
 function getVersion(cmd: string): string {
   try {
-    const { execFileSync } = require("node:child_process");
     const out = execFileSync(cmd, ["--version"], { encoding: "utf-8", timeout: 1500 });
     return out.toString().trim();
   } catch {
@@ -143,10 +140,6 @@ CREATE TABLE IF NOT EXISTS session_resume (
 `;
 
 function resolveSessionDbPath(projectDir?: string): string {
-  const { createHash } = require("node:crypto");
-  const { homedir } = require("node:os");
-  const { resolve, join } = require("node:path");
-
   const base =
     process.env.CTX_PLUGIN_DATA_DIR ||
     (process.env.XDG_DATA_HOME
@@ -359,7 +352,6 @@ let _summaryDb: Database | null = null;
 
 export function openSummaryDb(): Database {
   if (_summaryDb) return _summaryDb;
-  const { existsSync } = require("node:fs");
   const path = getSummariesDbPath();
   if (!existsSync(path)) {
     throw new Error(`Database not found at ${path}. Enable the transform plugin in ctx_plugin first.`);
@@ -376,7 +368,6 @@ export function closeSummaryDb(): void {
 }
 
 export function getSummaryStats(): { totalSummaries: number; totalSessions: number; totalMessages: number; dbSizeBytes: number } {
-  const { existsSync, statSync } = require("node:fs");
   const db = openSummaryDb();
   const cacheRow = db.prepare(`SELECT COUNT(*) as c FROM global_summary_cache`).get() as { c: number };
   const sessionRow = db.prepare(`SELECT COUNT(DISTINCT session_id) as c FROM session_turn_summaries`).get() as { c: number };

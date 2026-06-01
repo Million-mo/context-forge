@@ -17,11 +17,13 @@
     "install:all:uninstall": "tsx scripts/install-all.ts --uninstall",
     "build:shared-types": "npm run build --workspace=@context-forge/shared-types",
     "build:ctx-forge": "npm run build:shared-types && npm run build --workspace=@context-forge/mcp-context-forge",
-    "build:all": "npm run build:ctx-forge",
+    "build:server": "npm run build:ctx-forge && node scripts/build-server.mjs",
+    "build:all": "npm run build:server",
     "start:server": "node mcps/mcp_context_forge/dist/server.js",
     "typecheck": "npm run typecheck --workspace=@context-forge/shared-types && npm run typecheck --workspace=@context-forge/mcp-context-forge"
   },
   "dependencies": {
+    "@sqlite.org/sqlite-wasm": "^3.53.0-build1",
     "sql.js": "^1.14.1"
   }
 }

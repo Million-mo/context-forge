@@ -1,16 +1,9 @@
 /**
  * build-server.mjs — Bundle the unified MCP server with esbuild.
  *
- * This replaces `tsc` for mcp_context_forge because tsc's type checking
- * triggers Node.js 22's ESM/CJS mixed-module resolution bug when
- * source files import from sibling packages without package.json.
- *
- * Flow:
- *  1. Build shared-types (tsc, ESM output)
- *  2. Delete stale CJS .js files from mcp_ctx_tool + mcp_ctx_summary
- *     (these have incorrect package imports that break Node 22 ESM loader)
- *  3. Bundle server.ts with esbuild (external: shared-types, MCP SDK)
- *  4. Output to mcps/mcp_context_forge/dist/server.js
+ * After the plugin-registry refactor, mcp_ctx_tool and mcp_ctx_summary
+ * are merged into mcp_context_forge. This script bundles the server entry
+ * point for distribution (single file, no ESM resolution issues).
  */
 
 import * as esbuild from "esbuild";
@@ -21,26 +14,23 @@ const ROOT = path.resolve(import.meta.dirname, "..");
 const MCP_CXT = path.join(ROOT, "mcps", "mcp_context_forge");
 const DIST_DIR = path.join(MCP_CXT, "dist");
 
-function cleanDir(dir) {
+// Clean stale .js / .d.ts from dist (but keep .tsbuildinfo)
+function cleanDist(dir) {
   if (!fs.existsSync(dir)) return;
-  const entries = fs.readdirSync(dir, { withFileTypes: true });
-  for (const entry of entries) {
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
-      cleanDir(full);
+      cleanDist(full);
     } else if (entry.name.endsWith(".js") || entry.name.endsWith(".d.ts")) {
       fs.unlinkSync(full);
     }
   }
 }
 
-console.log("[build-server] Cleaning stale CJS/d.ts files...");
-cleanDir(path.join(ROOT, "mcps", "mcp_ctx_tool", "src"));
-cleanDir(path.join(ROOT, "mcps", "mcp_ctx_summary", "src"));
+console.log("[build-server] Cleaning dist...");
+cleanDist(DIST_DIR);
 console.log("[build-server] Clean complete.");
 
-// esbuild bundle
-console.log("[build-server] Bundling server with esbuild...");
 const entryPoints = [
   path.join(MCP_CXT, "src", "server.ts"),
   path.join(MCP_CXT, "src", "install.ts"),
@@ -48,7 +38,7 @@ const entryPoints = [
 
 for (const entry of entryPoints) {
   const name = path.basename(entry, ".ts");
-  console.log(`  Bundling ${name}...`);
+  console.log(`[build-server] Bundling ${name}...`);
   await esbuild.build({
     entryPoints: [entry],
     bundle: true,
@@ -67,4 +57,6 @@ for (const entry of entryPoints) {
   });
 }
 
-console.log("[build-server] Done — output:", path.join(DIST_DIR, "server.js"));
+console.log("[build-server] Done.");
+console.log(`  dist/server.js  — MCP server entry point`);
+console.log(`  dist/install.js — MCP registration CLI`);

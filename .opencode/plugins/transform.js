@@ -9,8 +9,81 @@
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import { homedir } from "node:os";
-import { mkdirSync, appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
-import initSqlJs from "sql.js";
+import { mkdirSync, appendFileSync, existsSync, readFileSync } from "node:fs";
+// ─── Bun SQLite Infrastructure ────────────────────────────────────────────────
+// OpenCode runs on Bun, which bundles bun:sqlite (native FTS5).
+// Adapt bun:sqlite API to the same interface used in transform.ts.
+function isSQLiteCorruptionError(msg) {
+    return (msg.includes("SQLITE_CORRUPT") ||
+        msg.includes("SQLITE_NOTADB") ||
+        msg.includes("database disk image is malformed") ||
+        msg.includes("file is not a database"));
+}
+function renameCorruptDB(dbPath) {
+    const { renameSync } = require("node:fs");
+    const ts = Date.now();
+    for (const suffix of ["", "-wal", "-shm"]) {
+        try {
+            renameSync(dbPath + suffix, `${dbPath}${suffix}.corrupt-${ts}`);
+        }
+        catch { /* ok */ }
+    }
+}
+function cleanOrphanedWALFiles(dbPath) {
+    if (!existsSync(dbPath)) {
+        const { unlinkSync } = require("node:fs");
+        for (const suffix of ["-wal", "-shm"]) {
+            try {
+                unlinkSync(dbPath + suffix);
+            }
+            catch { /* ok */ }
+        }
+    }
+}
+function applyWALPragmas(db) {
+    db.exec("PRAGMA journal_mode = WAL");
+    db.exec("PRAGMA synchronous = NORMAL");
+    try {
+        db.exec("PRAGMA mmap_size = 268435456");
+    }
+    catch { /* unsupported */ }
+}
+function openDatabase(dbPath) {
+    cleanOrphanedWALFiles(dbPath);
+    const { Database } = require("bun:sqlite");
+    let db;
+    try {
+        db = new Database(dbPath);
+    }
+    catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (isSQLiteCorruptionError(msg)) {
+            renameCorruptDB(dbPath);
+            cleanOrphanedWALFiles(dbPath);
+            db = new Database(dbPath);
+        }
+        else {
+            throw err;
+        }
+    }
+    applyWALPragmas(db);
+    return db;
+}
+const _liveDBs = new Set();
+process.on("exit", () => {
+    for (const db of _liveDBs) {
+        try {
+            db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+        }
+        catch { /* ok */ }
+        try {
+            db.close();
+        }
+        catch { /* ok */ }
+    }
+    _liveDBs.clear();
+});
+function registerDB(db) { _liveDBs.add(db); }
 // ─── Config ─────────────────────────────────────────────────────────────────
 const DATA_DIR = process.env.TRANSFORM_DATA_DIR
     || resolve(process.cwd(), ".ctx_plugin", "data");
@@ -36,10 +109,19 @@ function writeLog(level, ...parts) {
     catch { }
 }
 const log = {
-    info: (...a) => { console.log("[Transform]", ...a); writeLog("INFO", ...a); },
-    warn: (...a) => { console.warn("[Transform]", ...a); writeLog("WARN", ...a); },
-    error: (...a) => { console.error("[Transform]", ...a); writeLog("ERROR", ...a); },
+    info: (...a) => { writeLog("INFO", ...a); _appLog?.("info", a.join(" ")); },
+    warn: (...a) => { writeLog("WARN", ...a); _appLog?.("warn", a.join(" ")); },
+    error: (...a) => { writeLog("ERROR", ...a); _appLog?.("error", a.join(" ")); },
 };
+let _appLog = null;
+function initAppLogger(client) {
+    _appLog = (level, msg) => {
+        try {
+            client.app.log({ body: { service: "Transform", level, message: msg } });
+        }
+        catch { /* file log already done above */ }
+    };
+}
 const TOKEN_BUDGET = 8000;
 const MAX_HOT_TURNS = 5;
 const DECAY_WEIGHTS = {
@@ -185,10 +267,11 @@ CREATE INDEX IF NOT EXISTS idx_turn_messages_lookup ON turn_messages(session_id,
 `;
 class SummaryStore {
     db;
+    dbPath;
     saveTimer = null;
-    constructor(db) {
+    constructor(db, dbPath) {
         this.db = db;
-        this.db.exec("PRAGMA journal_mode=WAL;");
+        this.dbPath = dbPath;
         this.db.exec(SCHEMA);
     }
     scheduleSave() {
@@ -201,27 +284,31 @@ class SummaryStore {
     }
     persist() {
         try {
-            const data = this.db.export();
-            writeFileSync(resolve(DATA_DIR, "summaries.db"), Buffer.from(data));
+            // VACUUM INTO gives atomic backup writes — no corruption risk
+            const tmpPath = this.dbPath + ".tmp";
+            this.db.exec(`VACUUM INTO '${tmpPath}'`);
+            // Replace live file atomically
+            const { renameSync, unlinkSync } = require("node:fs");
+            try {
+                unlinkSync(this.dbPath);
+            }
+            catch { /* ignore if missing */ }
+            renameSync(tmpPath, this.dbPath);
         }
-        catch { /* ignore */ }
+        catch (err) {
+            log.warn("persist failed:", String(err));
+        }
     }
     getByHash(contentHash) {
         const stmt = this.db.prepare("SELECT * FROM global_summary_cache WHERE content_hash = ?");
-        stmt.bind([contentHash]);
-        if (!stmt.step()) {
-            stmt.free();
+        const row = stmt.get(contentHash);
+        if (!row)
             return null;
-        }
-        const row = stmt.getAsObject();
-        stmt.free();
-        const updStmt = this.db.prepare("UPDATE global_summary_cache SET hit_count = hit_count + 1, last_hit_at = ? WHERE content_hash = ?");
-        updStmt.run([Date.now(), contentHash]);
-        updStmt.free();
+        this.db.prepare("UPDATE global_summary_cache SET hit_count = hit_count + 1, last_hit_at = ? WHERE content_hash = ?").run(Date.now(), contentHash);
         return this.rowToSummary(row);
     }
     insert(summary, sessionId, contentHash) {
-        const cacheStmt = this.db.prepare(`
+        this.db.prepare(`
       INSERT OR REPLACE INTO global_summary_cache
         (content_hash, overview, intent, actions_json, artifacts_json,
          outcome, errors_json, todos_json, confidence, reason, generated_at,
@@ -233,32 +320,12 @@ class SummaryStore {
          ?,
          ?,
          ?)
-    `);
-        cacheStmt.run([
-            contentHash,
-            summary.overview,
-            summary.intent,
-            JSON.stringify(summary.actions),
-            JSON.stringify(summary.artifacts),
-            summary.outcome,
-            JSON.stringify(summary.errors),
-            JSON.stringify(summary.todos),
-            summary.confidence,
-            summary.reason || null,
-            summary.generatedAt,
-            summary.tokensUsed || 0,
-            Date.now(),
-            summary.startMsgId,
-            summary.endMsgId,
-        ]);
-        cacheStmt.free();
-        const idxStmt = this.db.prepare(`
+    `).run(contentHash, summary.overview, summary.intent, JSON.stringify(summary.actions), JSON.stringify(summary.artifacts), summary.outcome, JSON.stringify(summary.errors), JSON.stringify(summary.todos), summary.confidence, summary.reason || null, summary.generatedAt, summary.tokensUsed || 0, Date.now(), summary.startMsgId, summary.endMsgId);
+        this.db.prepare(`
       INSERT OR REPLACE INTO session_turn_summaries
         (session_id, turn_index, content_hash)
       VALUES (?, ?, ?)
-    `);
-        idxStmt.run([sessionId, summary.turnIndex, contentHash]);
-        idxStmt.free();
+    `).run(sessionId, summary.turnIndex, contentHash);
         this.scheduleSave();
     }
     insertMessages(sessionId, turnIndex, messages) {
@@ -285,18 +352,8 @@ class SummaryStore {
                     });
                 }
             }
-            stmt.run([
-                `${sessionId}-turn${turnIndex}-seq${seq}`,
-                sessionId,
-                turnIndex,
-                role,
-                textContent,
-                toolCalls.length > 0 ? JSON.stringify(toolCalls) : null,
-                msg?.timestamp || Date.now(),
-                seq,
-            ]);
+            stmt.run(`${sessionId}-turn${turnIndex}-seq${seq}`, sessionId, turnIndex, role, textContent, toolCalls.length > 0 ? JSON.stringify(toolCalls) : null, msg?.timestamp || Date.now(), seq);
         }
-        stmt.free();
         this.scheduleSave();
     }
     search(query, limit = 5) {
@@ -318,15 +375,11 @@ class SummaryStore {
         ORDER BY hit_count DESC, last_hit_at DESC
         LIMIT ?
       `);
-            stmt.bind([ftsQuery, limit]);
-            const results = [];
-            while (stmt.step()) {
-                results.push(this.rowToSummary(stmt.getAsObject()));
-            }
-            stmt.free();
-            return results;
+            const rows = stmt.all(ftsQuery, limit);
+            return rows.map((row) => this.rowToSummary(row));
         }
-        catch {
+        catch (err) {
+            log.warn("search failed:", String(err));
             return [];
         }
     }
@@ -349,27 +402,18 @@ class SummaryStore {
         };
     }
 }
-// Global store instance (initialized lazily)
+// Global store instance (initialized lazily — synchronous)
 let store = null;
-let storeDb = null;
-async function getStore() {
+function getStore() {
     if (!store) {
         mkdirSync(DATA_DIR, { recursive: true });
         const dbPath = resolve(DATA_DIR, "summaries.db");
-        const SQL = await initSqlJs();
-        let db;
-        if (existsSync(dbPath)) {
-            db = new SQL.Database(readFileSync(dbPath));
-        }
-        else {
-            db = new SQL.Database();
-        }
-        storeDb = db;
-        store = new SummaryStore(db);
+        const db = openDatabase(dbPath);
+        registerDB(db);
+        store = new SummaryStore(db, dbPath);
     }
     return store;
 }
-// ─── LLM Client ──────────────────────────────────────────────────────────────
 const SUMMARY_SYSTEM_PROMPT = `你是一个上下文压缩助手。请从对话轮次中提取关键信息，生成结构化摘要。
 
 重要：你没有思考能力，不要输出任何思考过程、推理步骤或解释。直接输出 JSON 结果。
@@ -443,7 +487,7 @@ async function generateSummary(turnIndex, messages, sessionId, contentHash) {
         { role: "user", content: SUMMARY_USER_PROMPT.replace("{turn_content}", serializedContent) },
     ];
     try {
-        const url = `${LLM_CONFIG.baseUrl}/v1/chat/completions`;
+        const url = `${LLM_CONFIG.baseUrl.replace(/\/$/, "")}/v1/chat/completions`;
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 60_000);
         let res;
@@ -470,7 +514,10 @@ async function generateSummary(turnIndex, messages, sessionId, contentHash) {
             log.error(`LLM API error ${res.status} for turn ${turnIndex}`);
             return null;
         }
-        const data = await res.json();
+        const data = await Promise.race([
+            res.json(),
+            new Promise((_, reject) => setTimeout(() => reject(new Error("LLM response JSON parse timeout")), 30_000)),
+        ]);
         const raw = data.choices?.[0]?.message?.content || "";
         const parsed = parseLLMResponse(raw);
         const summary = {
@@ -538,10 +585,15 @@ function parseLLMResponse(raw) {
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 const MAX_SERIALIZED_SIZE = 50_000;
 function deepClone(obj) {
-    if (typeof structuredClone === "function") {
+    // Fast path for plain objects/arrays of primitives — avoids JSON roundtrip
+    try {
         return structuredClone(obj);
     }
-    return JSON.parse(JSON.stringify(obj));
+    catch {
+        // structuredClone throws on circular refs or non-serializable values
+        // Fall back to JSON roundtrip (handles circular by throwing)
+        return JSON.parse(JSON.stringify(obj));
+    }
 }
 function safeJsonParse(json, fallback) {
     try {
@@ -551,14 +603,46 @@ function safeJsonParse(json, fallback) {
         return fallback;
     }
 }
+// Fast token estimator — avoids full JSON.stringify of every message on each call.
+// Tokens ≈ chars / 4 is accurate enough for compression decisions.
 function estimateTokens(messages) {
-    return Math.ceil(messages.reduce((sum, m) => sum + (JSON.stringify(m).length / 4), 0));
+    let total = 0;
+    for (const m of messages) {
+        if (!m)
+            continue;
+        // Use info + parts path for new format, role/parts for old format
+        const parts = m.parts || [];
+        for (const p of parts) {
+            if (typeof p?.text === "string")
+                total += p.text.length;
+            else if (typeof p?.output === "string")
+                total += p.output.length;
+            else if (typeof p === "string")
+                total += p.length;
+        }
+    }
+    return Math.ceil(total / 4);
 }
 function getRole(msg) {
     return msg?.info?.role || msg?.role || "";
 }
+// Fast hash for message deduplication — extracts only the meaningful content
+// to avoid the cost of full JSON.stringify on large message arrays.
 function hashMessages(messages) {
-    return createHash("sha256").update(JSON.stringify(messages)).digest("hex");
+    // Only hash role + text content — skip metadata, timestamps, tokens, etc.
+    let input = "";
+    for (const m of messages) {
+        input += (m?.info?.role || m?.role || "") + "|";
+        const parts = m?.parts || [];
+        for (const p of parts) {
+            if (p?.type === "text")
+                input += p.text ?? "";
+            else if (p?.type === "tool")
+                input += (p?.tool ?? "") + "|" + (p?.state?.input ? JSON.stringify(p.state.input) : "");
+        }
+        input += "\n";
+    }
+    return createHash("sha256").update(input).digest("hex");
 }
 function splitIntoTurns(messages) {
     if (messages.length === 0)
@@ -739,7 +823,6 @@ function buildSummaryReplacement(turn) {
     const timestamp = new Date(turn.messages[0]?.timestamp ?? Date.now()).toLocaleString();
     return [
         {
-            role: "user",
             info: { role: "user", __compressed: "summary", turnIndex: turn.index },
             parts: [{
                     type: "text",
@@ -747,7 +830,6 @@ function buildSummaryReplacement(turn) {
                 }],
         },
         {
-            role: "assistant",
             info: { role: "assistant", __compressed: "summary", turnIndex: turn.index },
             parts: [{
                     type: "text",
@@ -767,7 +849,6 @@ function buildSummaryReplacement(turn) {
 }
 function buildPlaceholderReplacement(turn) {
     return [{
-            role: "user",
             info: { role: "user", __compressed: "placeholder", turnIndex: turn.index },
             parts: [{
                     type: "text",
@@ -901,7 +982,7 @@ async function syncSession(sessionId, messages) {
             turn.summaryStatus = "done";
         }
         else {
-            triggerAsyncSummary(sessionId, turn);
+            triggerAsyncSummary(sessionId, turn).catch(() => { });
         }
     }
     const { messages: compressed, sourceTokens, compressedTokens, reduction } = buildCompressedMessages(store.turns, store.toolOutputs);
@@ -989,28 +1070,26 @@ async function loadSessionSnapshot() {
         const dbPath = resolve(sessionsDir, "sessions", `${hash}.db`);
         if (!existsSync(dbPath))
             return "";
-        const { Database } = await initSqlJs();
-        const sessionDb = new Database(readFileSync(dbPath));
+        const { Database } = require("bun:sqlite");
+        const sessionDb = new Database(dbPath);
         try {
             const stmt = sessionDb.prepare("SELECT id, snapshot FROM session_resume WHERE consumed = 0 ORDER BY created_at DESC LIMIT 1");
-            if (!stmt.step()) {
-                stmt.free();
+            const row = stmt.get();
+            if (!row?.snapshot || row.id == null) {
                 sessionDb.close();
                 return "";
             }
-            const row = stmt.getAsObject();
-            if (row?.snapshot && row.id != null) {
-                sessionDb.prepare("UPDATE session_resume SET consumed = 1 WHERE id = ?").run([row.id]);
-                const result = row.snapshot;
-                stmt.free();
-                sessionDb.close();
-                return result;
-            }
-            stmt.free();
-            return "";
-        }
-        finally {
+            sessionDb.prepare("UPDATE session_resume SET consumed = 1 WHERE id = ?").run(row.id);
+            const result = row.snapshot;
             sessionDb.close();
+            return result;
+        }
+        catch {
+            try {
+                sessionDb.close();
+            }
+            catch { /* ignore */ }
+            return "";
         }
     }
     catch {
@@ -1019,58 +1098,72 @@ async function loadSessionSnapshot() {
 }
 // ─── Plugin ─────────────────────────────────────────────────────────────────
 validateLLMConfig();
-export const TransformPlugin = () => ({
-    "chat.message": async (_input, output) => {
-        if (!output?.messages || !Array.isArray(output.messages))
-            return;
-        const messages = output.messages;
-        if (messages.length === 0)
-            return;
-        const sessionId = SESSION_ID;
-        // Step 1: Compress message history
-        const { messages: compressed, sourceTokens, compressedTokens, reduction } = await syncSession(sessionId, messages);
-        output.messages.splice(0, output.messages.length, ...compressed);
-        // Step 2: Inject history context if needed
-        const lastMsg = messages[messages.length - 1];
-        if (!lastMsg || getRole(lastMsg) !== "user")
-            return;
-        const query = detectHistoryQuery(lastMsg.parts || []);
-        if (!query)
-            return;
-        const db = await getStore();
-        const results = db.search(query, 3);
-        // Also load DB1 session snapshot for factual state (files, git, decisions)
-        let sessionSnapshot = "";
-        try {
-            sessionSnapshot = await loadSessionSnapshot();
-        }
-        catch {
-            // best-effort — DB1 may not be available
-        }
-        if (results.length === 0 && !sessionSnapshot)
-            return;
-        const contextParts = [];
-        // DB1 snapshot first (factual state: files, git, decisions)
-        if (sessionSnapshot) {
-            contextParts.push(sessionSnapshot);
-        }
-        // DB3 summaries second (semantic: what was done)
-        if (results.length > 0) {
-            contextParts.push(`=== Historical Context (LLM Summaries) ===\n` +
-                results.map((s) => `[Turn ${s.turnIndex}] ${s.overview}${s.intent ? ` | Intent: ${s.intent}` : ""}${s.outcome ? ` | ${s.outcome}` : ""}`).join("\n"));
-        }
-        const injected = contextParts.map((text) => ({
-            role: "system",
-            info: { role: "system", __transformInjected: true },
-            parts: [{ type: "text", text }],
-        }));
-        const insertAt = messages.length - 1;
-        output.messages.splice(insertAt, 0, ...injected);
-        log.info(`Injected ${injected.length} history blocks (DB3 summaries + ${sessionSnapshot ? "DB1 snapshot" : "no snapshot"}), ` +
-            `compression=${sourceTokens}→${compressedTokens} (${reduction})`);
-    },
-    "session.created": async () => {
-        log.info(`Session started, data dir: ${DATA_DIR}`);
-    },
-});
+export const TransformPlugin = async ({ client }) => {
+    initAppLogger(client);
+    log.info(`Session started, data dir: ${DATA_DIR}`);
+    return {
+        "experimental.chat.messages.transform": async (_input, output) => {
+            try {
+                if (!output?.messages || !Array.isArray(output.messages))
+                    return;
+                const rawMessages = output.messages;
+                // Normalize: SDK gives {info, parts}[] — convert to internal format {info, parts}
+                // for use by splitIntoTurns / getRole / etc.
+                const messages = rawMessages.map((m) => ({
+                    info: m.info ?? {},
+                    parts: m.parts ?? [],
+                }));
+                if (messages.length === 0)
+                    return;
+                const sessionId = SESSION_ID;
+                // Step 1: Compress message history
+                const { messages: compressed, sourceTokens, compressedTokens, reduction } = await syncSession(sessionId, messages);
+                // Normalize compressed output back to SDK format {info, parts}[]
+                const sdkMessages = compressed.map((m) => ({
+                    info: m.info ?? {},
+                    parts: m.parts ?? [],
+                }));
+                output.messages.splice(0, output.messages.length, ...sdkMessages);
+                // Step 2: Inject history context if needed
+                const lastMsg = messages[messages.length - 1];
+                if (!lastMsg || getRole(lastMsg) !== "user")
+                    return;
+                const query = detectHistoryQuery(lastMsg.parts || []);
+                if (!query)
+                    return;
+                const db = getStore();
+                const results = db.search(query, 3);
+                let sessionSnapshot = "";
+                try {
+                    sessionSnapshot = await loadSessionSnapshot();
+                }
+                catch {
+                    // best-effort — DB1 may not be available
+                }
+                if (results.length === 0 && !sessionSnapshot)
+                    return;
+                const contextParts = [];
+                if (sessionSnapshot) {
+                    contextParts.push(sessionSnapshot);
+                }
+                if (results.length > 0) {
+                    contextParts.push(`=== Historical Context (LLM Summaries) ===\n` +
+                        results.map((s) => `[Turn ${s.turnIndex}] ${s.overview}${s.intent ? ` | Intent: ${s.intent}` : ""}${s.outcome ? ` | ${s.outcome}` : ""}`).join("\n"));
+                }
+                const injected = contextParts.map((text) => ({
+                    info: { role: "system", __transformInjected: true },
+                    parts: [{ type: "text", text }],
+                }));
+                const insertAt = messages.length - 1;
+                output.messages.splice(insertAt, 0, ...injected);
+                log.info(`Injected ${injected.length} history blocks (DB3 summaries + ${sessionSnapshot ? "DB1 snapshot" : "no snapshot"}), ` +
+                    `compression=${sourceTokens}→${compressedTokens} (${reduction})`);
+            }
+            catch (err) {
+                log.error("Transform hook failed:", String(err));
+                // Do NOT re-throw — prevents opencode from crashing
+            }
+        },
+    };
+};
 export default TransformPlugin;
