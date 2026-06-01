@@ -16,10 +16,9 @@
  */
 
 import { spawnSync } from "node:child_process"
-import { existsSync, mkdirSync, copyFileSync, readFileSync, writeFileSync, readdirSync, rmSync } from "node:fs"
+import { existsSync, mkdirSync, copyFileSync, readFileSync, writeFileSync, readdirSync } from "node:fs"
 import { resolve, dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
-import { homedir } from "node:os"
 
 const __filename = fileURLToPath(import.meta.url)
 const ROOT = resolve(dirname(__filename), "..")
@@ -30,30 +29,24 @@ const TSC = resolve(ROOT, "node_modules", ".bin", "tsc")
 const TSCCONFIG = resolve(ROOT, "tsconfig.json")
 const DIST_DIR = resolve(ROOT, "dist")
 
-const OPENCODE_CONFIG_DIR = process.env.OPENCODE_CONFIG_DIR ||
-  (process.env.XDG_CONFIG_HOME && resolve(process.env.XDG_CONFIG_HOME, "opencode")) ||
-  (process.platform === "win32"
-    ? resolve(process.env.APPDATA || resolve(homedir(), "AppData", "Roaming"), "opencode")
-    : resolve(homedir(), ".config", "opencode"))
-const PLUGINS_OUT = resolve(OPENCODE_CONFIG_DIR, "plugins")
+const PROJECT_ROOT = resolve(ROOT, "..")
+const PLUGINS_OUT = resolve(PROJECT_ROOT, ".opencode", "plugins")
 
 const PLUGINS = [
   {
     name: "caveman",
     srcTs: join(ROOT, "src", "caveman.ts"),
     distJs: join(DIST_DIR, "caveman.js"),
-    outMjs: join(PLUGINS_OUT, "caveman.mjs"),
+    outJs: join(PLUGINS_OUT, "caveman.js"),
     srcName: "ctx_plugin/src/caveman.ts",
-    // Caveman only imports node:* modules, no project deps needed
     deps: [],
   },
   {
     name: "routing",
     srcTs: join(ROOT, "src", "routing-plugin.ts"),
     distJs: join(DIST_DIR, "routing-plugin.js"),
-    outMjs: join(PLUGINS_OUT, "routing.mjs"),
+    outJs: join(PLUGINS_OUT, "routing.js"),
     srcName: "ctx_plugin/src/routing-plugin.ts",
-    // Routing imports from hooks/ and security.ts — copy these alongside
     deps: [
       { src: join(DIST_DIR, "security.js"),       dst: join(PLUGINS_OUT, "security.js") },
       { src: join(DIST_DIR, "hooks"),             dst: join(PLUGINS_OUT, "hooks") },
@@ -63,9 +56,8 @@ const PLUGINS = [
     name: "transform",
     srcTs: join(ROOT, "src", "transform.ts"),
     distJs: join(DIST_DIR, "transform.js"),
-    outMjs: join(PLUGINS_OUT, "transform.mjs"),
+    outJs: join(PLUGINS_OUT, "transform.js"),
     srcName: "ctx_plugin/src/transform.ts",
-    // Transform only imports node:builtins, no project deps needed
     deps: [],
   },
 ]
@@ -174,8 +166,8 @@ for (const plugin of PLUGINS) {
     }
   }
 
-  writeFileSync(plugin.outMjs, code, "utf8")
-  console.log(`  ✓ ${plugin.name}.mjs → ${resolve(PLUGINS_OUT, plugin.name + ".mjs").replace(resolve(ROOT, "..") + "/", "")}`)
+  writeFileSync(plugin.outJs, code, "utf8")
+  console.log(`  ✓ ${plugin.name}.js → ${resolve(PLUGINS_OUT, plugin.name + ".js").replace(resolve(ROOT, "..") + "/", "")}`)
 }
 
 // ── Step 3: Copy dependency modules for standalone plugin resolution ──────────

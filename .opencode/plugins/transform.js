@@ -9,37 +9,17 @@
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import { homedir } from "node:os";
-import { mkdirSync, appendFileSync, existsSync, readFileSync } from "node:fs";
+import { mkdirSync, existsSync, readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 // ─── Config ─────────────────────────────────────────────────────────────────
-const DATA_DIR = process.env.TRANSFORM_DATA_DIR
-    || resolve(process.cwd(), ".ctx_plugin", "data");
-const LOG_DIR = resolve(process.cwd(), ".ctx_plugin", "log");
-const LOG_FILE = resolve(LOG_DIR, "transform.log");
-function ensureLogDir() {
-    try {
-        mkdirSync(LOG_DIR, { recursive: true });
-    }
-    catch { }
+let DATA_DIR = "";
+// Log helper: built lazily once client is available
+let _log = null;
+function log() {
+    if (!_log)
+        throw new Error("log called before plugin init");
+    return _log;
 }
-let _logFileReady = false;
-function writeLog(level, ...parts) {
-    if (!_logFileReady) {
-        ensureLogDir();
-        _logFileReady = true;
-    }
-    const ts = new Date().toISOString().replace("T", " ").replace("Z", "");
-    const line = `${ts} [${level}] [Transform] ${parts.join(" ")}\n`;
-    try {
-        appendFileSync(LOG_FILE, line);
-    }
-    catch { }
-}
-const log = {
-    info: (...a) => { console.log("[Transform]", ...a); writeLog("INFO", ...a); },
-    warn: (...a) => { console.warn("[Transform]", ...a); writeLog("WARN", ...a); },
-    error: (...a) => { console.error("[Transform]", ...a); writeLog("ERROR", ...a); },
-};
 const TOKEN_BUDGET = 8000;
 const MAX_HOT_TURNS = 5;
 const DECAY_WEIGHTS = {
@@ -68,17 +48,18 @@ function getCtxPluginGlobalDir() {
     }
     return resolve(homedir(), ".config", "ctx_plugin");
 }
-function loadLLMConfigFromFile() {
+function loadLLMConfigFromFile(directory) {
+    // Priority: project .ctx_plugin/config.json > project config.json (legacy) > global ~/.ctx_plugin/config.json
     const candidates = [
-        resolve(process.cwd(), ".ctx_plugin", "config.json"),
-        resolve(process.cwd(), "config.json"),
+        resolve(directory, ".ctx_plugin", "config.json"),
+        resolve(directory, "config.json"),
         resolve(getCtxPluginGlobalDir(), "config.json"),
     ];
     for (const path of candidates) {
         if (!existsSync(path))
             continue;
         try {
-            const cfg = JSON.parse(readFileSync(path, "utf8"));
+            const cfg = JSON.parse(readFileSync(path, "utf-8"));
             if (cfg.llm?.apiKey || cfg.apiKey) {
                 return {
                     apiKey: cfg.llm?.apiKey || cfg.apiKey || undefined,
@@ -89,29 +70,22 @@ function loadLLMConfigFromFile() {
                 };
             }
         }
-        catch { }
+        catch { /* try next */ }
     }
     return {};
 }
-const _fileConfig = loadLLMConfigFromFile();
-const LLM_CONFIG = {
-    apiKey: process.env.CONTEXT_FORGE_LLM_API_KEY || process.env.TRANSFORM_LLM_API_KEY || _fileConfig.apiKey || "placeholder",
-    baseUrl: process.env.CONTEXT_FORGE_LLM_BASE_URL || process.env.TRANSFORM_LLM_BASE_URL || _fileConfig.baseUrl || "http://116.204.104.177:8123",
-    model: process.env.CONTEXT_FORGE_LLM_MODEL || process.env.TRANSFORM_LLM_MODEL || _fileConfig.model || "GLM-4.7",
-    maxTokens: _fileConfig.maxTokens ?? 2048,
-    temperature: _fileConfig.temperature ?? 0.3,
-};
+let LLM_CONFIG;
 function validateLLMConfig() {
     if (LLM_CONFIG.apiKey === "placeholder") {
-        log.warn("LLM summarization DISABLED (no API key configured)");
-        log.warn("Set CONTEXT_FORGE_LLM_API_KEY (+ CONTEXT_FORGE_LLM_BASE_URL) to enable turn summaries");
+        log().warn("LLM summarization DISABLED (no API key configured)");
+        log().warn("Set CONTEXT_FORGE_LLM_API_KEY (+ CONTEXT_FORGE_LLM_BASE_URL) to enable turn summaries");
     }
 }
 // ─── SQLite Store ────────────────────────────────────────────────────────────
 /**
- * ⚠️ Keep in sync with @context-forge/shared-types/schema.
- * This is a copy because transform.ts runs  opencode plugin
- * and cannot import from the npm workspace at runtime.
+ * Schema is injected at build time from @context-forge/shared-types/schema.
+ * See bin/build-plugins.mjs — it replaces __CTX_SUMMARIES_SCHEMA__ with
+ * the canonical SUMMARIES_DB_SCHEMA export.
  */
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS global_summary_cache (
@@ -393,7 +367,7 @@ function serializeMessages(messages) {
 }
 async function generateSummary(turnIndex, messages, sessionId, contentHash) {
     if (!LLM_CONFIG.apiKey || LLM_CONFIG.apiKey === "placeholder") {
-        log.info(`No LLM API key — summary skipped for turn ${turnIndex}`);
+        log().info(`No LLM API key — summary skipped for turn ${turnIndex}`);
         return null;
     }
     const serializedContent = serializeMessages(messages).slice(0, MAX_SERIALIZED_SIZE);
@@ -426,7 +400,7 @@ async function generateSummary(turnIndex, messages, sessionId, contentHash) {
             clearTimeout(timeout);
         }
         if (!res.ok) {
-            log.error(`LLM API error ${res.status} for turn ${turnIndex}`);
+            log().error(`LLM API error ${res.status} for turn ${turnIndex}`);
             return null;
         }
         const data = await res.json();
@@ -450,11 +424,11 @@ async function generateSummary(turnIndex, messages, sessionId, contentHash) {
         };
         getStore().insert(summary, sessionId, contentHash);
         getStore().insertMessages(sessionId, turnIndex, messages);
-        log.info(`Summary generated for turn ${turnIndex}: ${summary.overview}`);
+        log().info(`Summary generated for turn ${turnIndex}: ${summary.overview}`);
         return summary;
     }
     catch (err) {
-        log.error(`LLM call failed for turn ${turnIndex}:`, String(err));
+        log().error(`LLM call failed for turn ${turnIndex}:`, String(err));
         return null;
     }
 }
@@ -833,7 +807,7 @@ function updateToolOutputIndex(messages, toolOutputs) {
 }
 function syncSession(sessionId, messages) {
     if (!Array.isArray(messages)) {
-        log.error("Expected messages to be array");
+        log().error("Expected messages to be array");
         return { messages: [], sourceTokens: 0, compressedTokens: 0, reduction: "0%" };
     }
     let store = sessions.get(sessionId);
@@ -862,7 +836,7 @@ function syncSession(sessionId, messages) {
         }
     }
     const { messages: compressed, sourceTokens, compressedTokens, reduction } = buildCompressedMessages(store.turns, store.toolOutputs);
-    log.info(`session=${sessionId.slice(0, 8)}.. turns=${store.turns.length} ` +
+    log().info(`session=${sessionId.slice(0, 8)}.. turns=${store.turns.length} ` +
         `tokens=${sourceTokens}→${compressedTokens} (${reduction})`);
     return { messages: compressed, sourceTokens, compressedTokens, reduction };
 }
@@ -925,45 +899,125 @@ function detectHistoryQuery(parts) {
     }
     return null;
 }
+// ─── Session Snapshot from DB1 ──────────────────────────────────────────────
+/**
+ * Load the latest resume snapshot from the session DB (DB1).
+ * Best-effort — returns "" if DB1 doesn't exist or is unreadable.
+ *
+ * The session DB path follows the same convention as
+ * mcp_ctx_tool's session-db.ts: ~/.local/share/ctx_plugin/sessions/<hash>.db
+ */
+function loadSessionSnapshot() {
+    try {
+        const hash = createHash("sha256")
+            .update(process.cwd().toLowerCase())
+            .digest("hex")
+            .slice(0, 16);
+        const sessionsDir = process.env.CTX_PLUGIN_DATA_DIR
+            || (process.env.XDG_DATA_HOME
+                ? resolve(process.env.XDG_DATA_HOME, "ctx_plugin")
+                : resolve(homedir(), ".local", "share", "ctx_plugin"));
+        const dbPath = resolve(sessionsDir, "sessions", `${hash}.db`);
+        if (!existsSync(dbPath))
+            return "";
+        const sessionDb = new DatabaseSync(dbPath);
+        try {
+            // Find the latest unconsumed snapshot
+            const row = sessionDb.prepare("SELECT id, snapshot FROM session_resume WHERE consumed = 0 ORDER BY created_at DESC LIMIT 1").get();
+            if (row?.snapshot && row.id != null) {
+                // Mark only THIS row  — avoid discarding other sessions' snapshots
+                sessionDb.prepare("UPDATE session_resume SET consumed = 1 WHERE id = ?").run(row.id);
+                return row.snapshot;
+            }
+            return "";
+        }
+        finally {
+            sessionDb.close();
+        }
+    }
+    catch {
+        return "";
+    }
+}
 // ─── Plugin ─────────────────────────────────────────────────────────────────
-validateLLMConfig();
-export const TransformPlugin = () => ({
-    "chat.message": async (_input, output) => {
-        if (!output?.messages || !Array.isArray(output.messages))
-            return;
-        const messages = output.messages;
-        if (messages.length === 0)
-            return;
-        const sessionId = SESSION_ID;
-        // Step 1: Compress message history
-        const { messages: compressed, sourceTokens, compressedTokens, reduction } = syncSession(sessionId, messages);
-        output.messages.splice(0, output.messages.length, ...compressed);
-        // Step 2: Inject history context if needed
-        const lastMsg = messages[messages.length - 1];
-        if (!lastMsg || getRole(lastMsg) !== "user")
-            return;
-        const query = detectHistoryQuery(lastMsg.parts || []);
-        if (!query)
-            return;
-        const results = getStore().search(query, 3);
-        if (results.length === 0)
-            return;
-        const injected = results.map((s) => ({
-            role: "system",
-            info: { role: "system", __transformInjected: true },
-            parts: [{
-                    type: "text",
-                    text: `=== Historical Context ===\n` +
-                        `[Turn ${s.turnIndex}] ${s.overview}${s.intent ? ` | Intent: ${s.intent}` : ""}${s.outcome ? ` | ${s.outcome}` : ""}`,
-                }],
-        }));
-        const insertAt = messages.length - 1;
-        output.messages.splice(insertAt, 0, ...injected);
-        log.info(`Injected ${injected.length} history blocks, ` +
-            `compression=${sourceTokens}→${compressedTokens} (${reduction})`);
-    },
-    "session.created": async () => {
-        log.info(`Session started, data dir: ${DATA_DIR}`);
-    },
-});
+export const TransformPlugin = async ({ client, directory }) => {
+    // ─── Init: resolve paths + config ───────────────────────────────────────
+    DATA_DIR = process.env.TRANSFORM_DATA_DIR || resolve(directory, ".ctx_plugin", "data");
+    const _fileConfig = loadLLMConfigFromFile(directory);
+    LLM_CONFIG = {
+        apiKey: process.env.CONTEXT_FORGE_LLM_API_KEY || process.env.TRANSFORM_LLM_API_KEY || _fileConfig.apiKey || "placeholder",
+        baseUrl: process.env.CONTEXT_FORGE_LLM_BASE_URL || process.env.TRANSFORM_LLM_BASE_URL || _fileConfig.baseUrl || "http://116.204.104.177:8123",
+        model: process.env.CONTEXT_FORGE_LLM_MODEL || process.env.TRANSFORM_LLM_MODEL || _fileConfig.model || "GLM-4.7",
+        maxTokens: _fileConfig.maxTokens ?? 2048,
+        temperature: _fileConfig.temperature ?? 0.3,
+    };
+    _log = {
+        info: (...a) => {
+            const message = a.join(" ");
+            client.app.log({ body: { service: "transform", level: "info", message } }).catch(() => { });
+        },
+        warn: (...a) => {
+            const message = a.join(" ");
+            client.app.log({ body: { service: "transform", level: "warn", message } }).catch(() => { });
+        },
+        error: (...a) => {
+            const message = a.join(" ");
+            client.app.log({ body: { service: "transform", level: "error", message } }).catch(() => { });
+        },
+    };
+    validateLLMConfig();
+    return ({
+        "experimental.chat.messages.transform": async (_input, output) => {
+            if (!output?.messages || !Array.isArray(output.messages))
+                return;
+            const messages = output.messages;
+            if (messages.length === 0)
+                return;
+            const sessionId = SESSION_ID;
+            // Step 1: Compress message history
+            const { messages: compressed, sourceTokens, compressedTokens, reduction } = syncSession(sessionId, messages);
+            output.messages.splice(0, output.messages.length, ...compressed);
+            // Step 2: Inject history context if needed
+            const lastMsg = messages[messages.length - 1];
+            if (!lastMsg || getRole(lastMsg) !== "user")
+                return;
+            const query = detectHistoryQuery(lastMsg.parts || []);
+            if (!query)
+                return;
+            const results = getStore().search(query, 3);
+            // Also load DB1 session snapshot for factual state (files, git, decisions)
+            let sessionSnapshot = "";
+            try {
+                sessionSnapshot = loadSessionSnapshot();
+            }
+            catch {
+                // best-effort — DB1 may not be available
+            }
+            if (results.length === 0 && !sessionSnapshot)
+                return;
+            const contextParts = [];
+            // DB1 snapshot first (factual state: files, git, decisions)
+            if (sessionSnapshot) {
+                contextParts.push(sessionSnapshot);
+            }
+            // DB3 summaries second (semantic: what was done)
+            if (results.length > 0) {
+                contextParts.push(`=== Historical Context (LLM Summaries) ===\n` +
+                    results.map((s) => `[Turn ${s.turnIndex}] ${s.overview}${s.intent ? ` | Intent: ${s.intent}` : ""}${s.outcome ? ` | ${s.outcome}` : ""}`).join("\n"));
+            }
+            const injected = contextParts.map((text) => ({
+                role: "system",
+                info: { role: "system", __transformInjected: true },
+                parts: [{ type: "text", text }],
+            }));
+            const insertAt = messages.length - 1;
+            output.messages.splice(insertAt, 0, ...injected);
+            log().info(`Injected ${injected.length} history blocks (DB3 summaries + ${sessionSnapshot ? "DB1 snapshot" : "no snapshot"}), ` +
+                `compression=${sourceTokens}→${compressedTokens} (${reduction})`);
+        },
+        "session.created": async () => {
+            log().info(`Session started, data dir: ${DATA_DIR}`);
+        },
+    });
+};
 export default TransformPlugin;

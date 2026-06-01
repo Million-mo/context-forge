@@ -11,7 +11,7 @@ import os from "node:os";
 import { existsSync, unlinkSync } from "node:fs";
 const { mkdirSync, lstatSync, realpathSync, statSync, openSync, writeSync, closeSync, renameSync, readFileSync, readSync } = fs;
 // ---------------------------------------------------------------------------
-// Config
+// Config (unified: ~/.ctx_plugin/)
 // ---------------------------------------------------------------------------
 const VALID_MODES = new Set([
     "off", "lite", "full", "ultra",
@@ -30,7 +30,9 @@ function getCtxPluginDir() {
     return path.join(os.homedir(), ".config", "ctx_plugin");
 }
 const CAVEMAN_FLAG = path.join(getCtxPluginDir(), "caveman-active");
+// Unified config file (new location). Also try legacy caveman config for migration.
 const CTX_PLUGIN_CONFIG_FILE = path.join(getCtxPluginDir(), "config.json");
+// Legacy: ~/.config/caveman/config.json — remove after migration
 function getLegacyCavemanConfigPath() {
     if (process.env.XDG_CONFIG_HOME)
         return path.join(process.env.XDG_CONFIG_HOME, "caveman", "config.json");
@@ -46,6 +48,7 @@ function getDefaultMode() {
     const env = process.env.CAVEMAN_DEFAULT_MODE;
     if (env && VALID_MODES.has(env.toLowerCase()))
         return env.toLowerCase();
+    // Try unified config first (~/.ctx_plugin/config.json)
     try {
         const cfg = JSON.parse(readFileSync(CTX_PLUGIN_CONFIG_FILE, "utf8"));
         const mode = cfg.caveman?.defaultMode || cfg.defaultMode;
@@ -53,6 +56,7 @@ function getDefaultMode() {
             return mode.toLowerCase();
     }
     catch { }
+    // Fall back to legacy (~/.config/caveman/config.json)
     try {
         const cfg = JSON.parse(readFileSync(getLegacyCavemanConfigPath(), "utf8"));
         if (cfg.defaultMode && VALID_MODES.has(cfg.defaultMode.toLowerCase())) {
