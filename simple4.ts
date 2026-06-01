@@ -1,1 +1,0 @@
-import("@context-forge/shared-types").then(m=>console.log("OK")).catch(e=>console.error("FAIL:",e.message)); import("../../mcp_ctx_tool/src/executor.js").then(m=>console.log("EXE OK")).catch(e=>console.error("EXE FAIL:",e.message))

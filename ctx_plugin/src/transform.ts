@@ -21,8 +21,8 @@
 import { createHash } from "node:crypto"
 import { resolve } from "node:path"
 import { homedir } from "node:os"
-import { mkdirSync, appendFileSync, existsSync, readFileSync } from "node:fs"
-import { DatabaseSync } from "node:sqlite"
+import { mkdirSync, appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs"
+import initSqlJs, { type Database } from "sql.js"
 import type { TurnSummary, ActionEntry, ArtifactChange } from "@context-forge/shared-types"
 
 // ─── Types ─────────────────────────────────────────────────────────────────
@@ -168,27 +168,45 @@ function validateLLMConfig(): void {
 const SCHEMA = `__CTX_SUMMARIES_SCHEMA__`
 
 class SummaryStore {
-  private db: any
+  private db: Database
+  private saveTimer: ReturnType<typeof setTimeout> | null = null
 
-  constructor() {
-    mkdirSync(DATA_DIR, { recursive: true })
-    const dbPath = resolve(DATA_DIR, "summaries.db")
-    this.db = new DatabaseSync(dbPath)
+  constructor(db: Database) {
+    this.db = db
     this.db.exec("PRAGMA journal_mode=WAL;")
     this.db.exec(SCHEMA)
+  }
+
+  private scheduleSave(): void {
+    if (this.saveTimer) return
+    this.saveTimer = setTimeout(() => {
+      this.saveTimer = null
+      this.persist()
+    }, 500)
+  }
+
+  private persist(): void {
+    try {
+      const data = this.db.export()
+      writeFileSync(resolve(DATA_DIR, "summaries.db"), Buffer.from(data))
+    } catch { /* ignore */ }
   }
 
   getByHash(contentHash: string): TurnSummary | null {
     const stmt = this.db.prepare(
       "SELECT * FROM global_summary_cache WHERE content_hash = ?"
     )
-    const row = stmt.get(contentHash) as any
-    if (!row) return null
+    stmt.bind([contentHash])
+    if (!stmt.step()) { stmt.free(); return null }
+
+    const row = stmt.getAsObject()
+    stmt.free()
 
     const updStmt = this.db.prepare(
       "UPDATE global_summary_cache SET hit_count = hit_count + 1, last_hit_at = ? WHERE content_hash = ?"
     )
-    updStmt.run(Date.now(), contentHash)
+    updStmt.run([Date.now(), contentHash])
+    updStmt.free()
 
     return this.rowToSummary(row)
   }
@@ -200,47 +218,49 @@ class SummaryStore {
          outcome, errors_json, todos_json, confidence, reason, generated_at,
          tokens_used, last_hit_at, start_msg_id, end_msg_id)
       VALUES
-        (@content_hash, @overview, @intent, @actions_json, @artifacts_json,
-         @outcome, @errors_json, @todos_json, @confidence, @reason, @generated_at,
-         @tokens_used, @last_hit_at, @start_msg_id, @end_msg_id)
+        (?, ?, ?, ?, ?,
+         ?, ?, ?, ?, ?,
+         ?,
+         ?,
+         ?,
+         ?)
     `)
+
+    cacheStmt.run([
+      contentHash,
+      summary.overview,
+      summary.intent,
+      JSON.stringify(summary.actions),
+      JSON.stringify(summary.artifacts),
+      summary.outcome,
+      JSON.stringify(summary.errors),
+      JSON.stringify(summary.todos),
+      summary.confidence,
+      summary.reason || null,
+      summary.generatedAt,
+      summary.tokensUsed || 0,
+      Date.now(),
+      summary.startMsgId,
+      summary.endMsgId,
+    ])
+    cacheStmt.free()
 
     const idxStmt = this.db.prepare(`
       INSERT OR REPLACE INTO session_turn_summaries
         (session_id, turn_index, content_hash)
-      VALUES (@session_id, @turn_index, @content_hash)
+      VALUES (?, ?, ?)
     `)
+    idxStmt.run([sessionId, summary.turnIndex, contentHash])
+    idxStmt.free()
 
-    cacheStmt.run({
-      content_hash: contentHash,
-      overview: summary.overview,
-      intent: summary.intent,
-      actions_json: JSON.stringify(summary.actions),
-      artifacts_json: JSON.stringify(summary.artifacts),
-      outcome: summary.outcome,
-      errors_json: JSON.stringify(summary.errors),
-      todos_json: JSON.stringify(summary.todos),
-      confidence: summary.confidence,
-      reason: summary.reason || null,
-      generated_at: summary.generatedAt,
-      tokens_used: summary.tokensUsed || 0,
-      last_hit_at: Date.now(),
-      start_msg_id: summary.startMsgId,
-      end_msg_id: summary.endMsgId,
-    })
-
-    idxStmt.run({
-      session_id: sessionId,
-      turn_index: summary.turnIndex,
-      content_hash: contentHash,
-    })
+    this.scheduleSave()
   }
 
   insertMessages(sessionId: string, turnIndex: number, messages: any[]): void {
     const stmt = this.db.prepare(`
       INSERT OR REPLACE INTO turn_messages
         (msg_id, session_id, turn_index, role, content, tool_calls, created_at, seq_in_turn)
-      VALUES (@msg_id, @session_id, @turn_index, @role, @content, @tool_calls, @created_at, @seq_in_turn)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `)
 
     for (let seq = 0; seq < messages.length; seq++) {
@@ -263,23 +283,24 @@ class SummaryStore {
         }
       }
 
-      stmt.run({
-        msg_id: `${sessionId}-turn${turnIndex}-seq${seq}`,
-        session_id: sessionId,
-        turn_index: turnIndex,
+      stmt.run([
+        `${sessionId}-turn${turnIndex}-seq${seq}`,
+        sessionId,
+        turnIndex,
         role,
-        content: textContent,
-        tool_calls: toolCalls.length > 0 ? JSON.stringify(toolCalls) : null,
-        created_at: msg?.timestamp || Date.now(),
-        seq_in_turn: seq,
-      })
+        textContent,
+        toolCalls.length > 0 ? JSON.stringify(toolCalls) : null,
+        msg?.timestamp || Date.now(),
+        seq,
+      ])
     }
+    stmt.free()
+    this.scheduleSave()
   }
 
   search(query: string, limit = 5): TurnSummary[] {
     if (!query.trim()) return []
 
-    // Strict validation: only allow safe alphanumeric + common word chars + Chinese
     const safe = query.replace(/[^a-zA-Z0-9\u4e00-\u9fff\s]/g, " ").trim()
     if (!safe || safe.length > 200) return []
 
@@ -297,8 +318,13 @@ class SummaryStore {
         ORDER BY hit_count DESC, last_hit_at DESC
         LIMIT ?
       `)
-      const rows = stmt.all(ftsQuery, limit) as any[]
-      return rows.map((row) => this.rowToSummary(row))
+      stmt.bind([ftsQuery, limit])
+      const results: TurnSummary[] = []
+      while (stmt.step()) {
+        results.push(this.rowToSummary(stmt.getAsObject()))
+      }
+      stmt.free()
+      return results
     } catch {
       return []
     }
@@ -324,10 +350,24 @@ class SummaryStore {
   }
 }
 
+
 // Global store instance (initialized lazily)
 let store: SummaryStore | null = null
-function getStore(): SummaryStore {
-  if (!store) store = new SummaryStore()
+let storeDb: Database | null = null
+async function getStore(): Promise<SummaryStore> {
+  if (!store) {
+    mkdirSync(DATA_DIR, { recursive: true })
+    const dbPath = resolve(DATA_DIR, "summaries.db")
+    const SQL = await initSqlJs()
+    let db: Database
+    if (existsSync(dbPath)) {
+      db = new SQL.Database(readFileSync(dbPath))
+    } else {
+      db = new SQL.Database()
+    }
+    storeDb = db
+    store = new SummaryStore(db)
+  }
   return store
 }
 
@@ -470,8 +510,9 @@ async function generateSummary(
       endMsgId: `turn-${turnIndex}-end`,
     }
 
-    getStore().insert(summary, sessionId, contentHash)
-    getStore().insertMessages(sessionId, turnIndex, messages)
+    const db = await getStore()
+    db.insert(summary, sessionId, contentHash)
+    db.insertMessages(sessionId, turnIndex, messages)
     log.info(`Summary generated for turn ${turnIndex}: ${summary.overview}`)
     return summary
   } catch (err) {
@@ -908,10 +949,10 @@ function updateToolOutputIndex(
   }
 }
 
-function syncSession(
+async function syncSession(
   sessionId: string,
   messages: any[],
-): { messages: any[]; sourceTokens: number; compressedTokens: number; reduction: string } {
+): Promise<{ messages: any[]; sourceTokens: number; compressedTokens: number; reduction: string }> {
   if (!Array.isArray(messages)) {
     log.error("Expected messages to be array")
     return { messages: [], sourceTokens: 0, compressedTokens: 0, reduction: "0%" }
@@ -936,7 +977,8 @@ function syncSession(
   for (const turn of completedTurns) {
     if (turn.summaryStatus !== "pending") continue
 
-    const cached = getStore().getByHash(turn.contentHash)
+    const db = await getStore()
+    const cached = db.getByHash(turn.contentHash)
     if (cached) {
       turn.summary = cached
       turn.summaryStatus = "done"
@@ -1031,7 +1073,7 @@ function detectHistoryQuery(parts: any[]): string | null {
  * The session DB path follows the same convention as
  * mcp_ctx_tool's session-db.ts: ~/.local/share/ctx_plugin/sessions/<hash>.db
  */
-function loadSessionSnapshot(): string {
+async function loadSessionSnapshot(): Promise<string> {
   try {
     const hash = createHash("sha256")
       .update(process.cwd().toLowerCase())
@@ -1046,21 +1088,27 @@ function loadSessionSnapshot(): string {
     const dbPath = resolve(sessionsDir, "sessions", `${hash}.db`)
     if (!existsSync(dbPath)) return ""
 
-    const sessionDb = new DatabaseSync(dbPath)
+    const { Database } = await initSqlJs()
+    const sessionDb = new Database(readFileSync(dbPath))
 
     try {
-      // Find the latest unconsumed snapshot
-      const row = sessionDb.prepare(
+      const stmt = sessionDb.prepare(
         "SELECT id, snapshot FROM session_resume WHERE consumed = 0 ORDER BY created_at DESC LIMIT 1"
-      ).get() as { id?: number; snapshot?: string } | undefined
+      )
+      if (!stmt.step()) { stmt.free(); sessionDb.close(); return "" }
+
+      const row = stmt.getAsObject() as { id?: number; snapshot?: string }
 
       if (row?.snapshot && row.id != null) {
-        // Mark only THIS row as consumed — avoid discarding other sessions' snapshots
         sessionDb.prepare(
           "UPDATE session_resume SET consumed = 1 WHERE id = ?"
-        ).run(row.id)
-        return row.snapshot
+        ).run([row.id])
+        const result = row.snapshot
+        stmt.free()
+        sessionDb.close()
+        return result
       }
+      stmt.free()
       return ""
     } finally {
       sessionDb.close()
@@ -1085,7 +1133,7 @@ export const TransformPlugin = () => ({
 
     // Step 1: Compress message history
     const { messages: compressed, sourceTokens, compressedTokens, reduction } =
-      syncSession(sessionId, messages)
+    await syncSession(sessionId, messages)
 
     output.messages.splice(0, output.messages.length, ...compressed)
 
@@ -1096,12 +1144,13 @@ export const TransformPlugin = () => ({
     const query = detectHistoryQuery(lastMsg.parts || [])
     if (!query) return
 
-    const results = getStore().search(query, 3)
+    const db = await getStore()
+    const results = db.search(query, 3)
 
     // Also load DB1 session snapshot for factual state (files, git, decisions)
     let sessionSnapshot = ""
     try {
-      sessionSnapshot = loadSessionSnapshot()
+      sessionSnapshot = await loadSessionSnapshot()
     } catch {
       // best-effort — DB1 may not be available
     }

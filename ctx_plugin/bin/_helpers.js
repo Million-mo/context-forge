@@ -10,21 +10,17 @@ import {
   readdirSync,
   writeFileSync,
 } from "node:fs"
-import { join } from "node:path"
-import os from "node:os"
+import { join, dirname } from "node:path"
+import { fileURLToPath } from "node:url"
 
 // ── path resolution ──────────────────────────────────────────────────
 
+// Project root (two levels up from bin/)
+const __HELPERS_DIR = dirname(fileURLToPath(import.meta.url))
+const PROJECT_ROOT = join(__HELPERS_DIR, "..", "..")
+
 export function opencodeDir() {
-  if (process.env.OPENCODE_CONFIG_DIR) return process.env.OPENCODE_CONFIG_DIR
-  if (process.env.XDG_CONFIG_HOME) return join(process.env.XDG_CONFIG_HOME, "opencode")
-  if (process.platform === "win32") {
-    return join(
-      process.env.APPDATA ?? join(os.homedir(), "AppData", "Roaming"),
-      "opencode",
-    )
-  }
-  return join(os.homedir(), ".config", "opencode")
+  return join(PROJECT_ROOT, ".opencode")
 }
 
 // ── json helpers ────────────────────────────────────────────────────

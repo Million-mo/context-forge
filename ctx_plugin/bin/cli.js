@@ -16,7 +16,6 @@ import { existsSync } from "node:fs"
 import { join, dirname } from "node:path"
 import { fileURLToPath } from "node:url"
 import { execSync } from "node:child_process"
-import os from "node:os"
 
 const __filename = fileURLToPath(import.meta.url)
 const BIN = dirname(__filename)
@@ -41,15 +40,7 @@ function rtkAvailable() {
 }
 
 function opencodeDir() {
-  if (process.env.OPENCODE_CONFIG_DIR) return process.env.OPENCODE_CONFIG_DIR
-  if (process.env.XDG_CONFIG_HOME) return join(process.env.XDG_CONFIG_HOME, "opencode")
-  if (process.platform === "win32") {
-    return join(
-      process.env.APPDATA ?? join(os.homedir(), "AppData", "Roaming"),
-      "opencode",
-    )
-  }
-  return join(os.homedir(), ".config", "opencode")
+  return join(BIN, "..", "..", ".opencode")
 }
 
 const cmd = process.argv[2]

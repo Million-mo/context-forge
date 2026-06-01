@@ -9,37 +9,17 @@
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import { homedir } from "node:os";
-import { mkdirSync, appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
-import initSqlJs from "sql.js";
+import { mkdirSync, existsSync, readFileSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
 // ─── Config ─────────────────────────────────────────────────────────────────
-const DATA_DIR = process.env.TRANSFORM_DATA_DIR
-    || resolve(process.cwd(), ".ctx_plugin", "data");
-const LOG_DIR = resolve(process.cwd(), ".ctx_plugin", "log");
-const LOG_FILE = resolve(LOG_DIR, "transform.log");
-function ensureLogDir() {
-    try {
-        mkdirSync(LOG_DIR, { recursive: true });
-    }
-    catch { }
+let DATA_DIR = "";
+// Log helper: built lazily once client is available
+let _log = null;
+function log() {
+    if (!_log)
+        throw new Error("log called before plugin init");
+    return _log;
 }
-let _logFileReady = false;
-function writeLog(level, ...parts) {
-    if (!_logFileReady) {
-        ensureLogDir();
-        _logFileReady = true;
-    }
-    const ts = new Date().toISOString().replace("T", " ").replace("Z", "");
-    const line = `${ts} [${level}] [Transform] ${parts.join(" ")}\n`;
-    try {
-        appendFileSync(LOG_FILE, line);
-    }
-    catch { }
-}
-const log = {
-    info: (...a) => { console.log("[Transform]", ...a); writeLog("INFO", ...a); },
-    warn: (...a) => { console.warn("[Transform]", ...a); writeLog("WARN", ...a); },
-    error: (...a) => { console.error("[Transform]", ...a); writeLog("ERROR", ...a); },
-};
 const TOKEN_BUDGET = 8000;
 const MAX_HOT_TURNS = 5;
 const DECAY_WEIGHTS = {
@@ -68,11 +48,11 @@ function getCtxPluginGlobalDir() {
     }
     return resolve(homedir(), ".config", "ctx_plugin");
 }
-function loadLLMConfigFromFile() {
+function loadLLMConfigFromFile(directory) {
     // Priority: project .ctx_plugin/config.json > project config.json (legacy) > global ~/.ctx_plugin/config.json
     const candidates = [
-        resolve(process.cwd(), ".ctx_plugin", "config.json"),
-        resolve(process.cwd(), "config.json"),
+        resolve(directory, ".ctx_plugin", "config.json"),
+        resolve(directory, "config.json"),
         resolve(getCtxPluginGlobalDir(), "config.json"),
     ];
     for (const path of candidates) {
@@ -94,18 +74,11 @@ function loadLLMConfigFromFile() {
     }
     return {};
 }
-const _fileConfig = loadLLMConfigFromFile();
-const LLM_CONFIG = {
-    apiKey: process.env.CONTEXT_FORGE_LLM_API_KEY || process.env.TRANSFORM_LLM_API_KEY || _fileConfig.apiKey || "placeholder",
-    baseUrl: process.env.CONTEXT_FORGE_LLM_BASE_URL || process.env.TRANSFORM_LLM_BASE_URL || _fileConfig.baseUrl || "http://116.204.104.177:8123",
-    model: process.env.CONTEXT_FORGE_LLM_MODEL || process.env.TRANSFORM_LLM_MODEL || _fileConfig.model || "GLM-4.7",
-    maxTokens: _fileConfig.maxTokens ?? 2048,
-    temperature: _fileConfig.temperature ?? 0.3,
-};
+let LLM_CONFIG;
 function validateLLMConfig() {
     if (LLM_CONFIG.apiKey === "placeholder") {
-        log.warn("LLM summarization DISABLED (no API key configured)");
-        log.warn("Set CONTEXT_FORGE_LLM_API_KEY (+ CONTEXT_FORGE_LLM_BASE_URL) to enable turn summaries");
+        log().warn("LLM summarization DISABLED (no API key configured)");
+        log().warn("Set CONTEXT_FORGE_LLM_API_KEY (+ CONTEXT_FORGE_LLM_BASE_URL) to enable turn summaries");
     }
 }
 // ─── SQLite Store ────────────────────────────────────────────────────────────
@@ -185,39 +158,20 @@ CREATE INDEX IF NOT EXISTS idx_turn_messages_lookup ON turn_messages(session_id,
 `;
 class SummaryStore {
     db;
-    saveTimer = null;
-    constructor(db) {
-        this.db = db;
+    constructor() {
+        mkdirSync(DATA_DIR, { recursive: true });
+        const dbPath = resolve(DATA_DIR, "summaries.db");
+        this.db = new DatabaseSync(dbPath);
         this.db.exec("PRAGMA journal_mode=WAL;");
         this.db.exec(SCHEMA);
     }
-    scheduleSave() {
-        if (this.saveTimer)
-            return;
-        this.saveTimer = setTimeout(() => {
-            this.saveTimer = null;
-            this.persist();
-        }, 500);
-    }
-    persist() {
-        try {
-            const data = this.db.export();
-            writeFileSync(resolve(DATA_DIR, "summaries.db"), Buffer.from(data));
-        }
-        catch { /* ignore */ }
-    }
     getByHash(contentHash) {
         const stmt = this.db.prepare("SELECT * FROM global_summary_cache WHERE content_hash = ?");
-        stmt.bind([contentHash]);
-        if (!stmt.step()) {
-            stmt.free();
+        const row = stmt.get(contentHash);
+        if (!row)
             return null;
-        }
-        const row = stmt.getAsObject();
-        stmt.free();
         const updStmt = this.db.prepare("UPDATE global_summary_cache SET hit_count = hit_count + 1, last_hit_at = ? WHERE content_hash = ?");
-        updStmt.run([Date.now(), contentHash]);
-        updStmt.free();
+        updStmt.run(Date.now(), contentHash);
         return this.rowToSummary(row);
     }
     insert(summary, sessionId, contentHash) {
@@ -227,45 +181,43 @@ class SummaryStore {
          outcome, errors_json, todos_json, confidence, reason, generated_at,
          tokens_used, last_hit_at, start_msg_id, end_msg_id)
       VALUES
-        (?, ?, ?, ?, ?,
-         ?, ?, ?, ?, ?,
-         ?,
-         ?,
-         ?,
-         ?)
+        (@content_hash, @overview, @intent, @actions_json, @artifacts_json,
+         @outcome, @errors_json, @todos_json, @confidence, @reason, @generated_at,
+         @tokens_used, @last_hit_at, @start_msg_id, @end_msg_id)
     `);
-        cacheStmt.run([
-            contentHash,
-            summary.overview,
-            summary.intent,
-            JSON.stringify(summary.actions),
-            JSON.stringify(summary.artifacts),
-            summary.outcome,
-            JSON.stringify(summary.errors),
-            JSON.stringify(summary.todos),
-            summary.confidence,
-            summary.reason || null,
-            summary.generatedAt,
-            summary.tokensUsed || 0,
-            Date.now(),
-            summary.startMsgId,
-            summary.endMsgId,
-        ]);
-        cacheStmt.free();
         const idxStmt = this.db.prepare(`
       INSERT OR REPLACE INTO session_turn_summaries
         (session_id, turn_index, content_hash)
-      VALUES (?, ?, ?)
+      VALUES (@session_id, @turn_index, @content_hash)
     `);
-        idxStmt.run([sessionId, summary.turnIndex, contentHash]);
-        idxStmt.free();
-        this.scheduleSave();
+        cacheStmt.run({
+            content_hash: contentHash,
+            overview: summary.overview,
+            intent: summary.intent,
+            actions_json: JSON.stringify(summary.actions),
+            artifacts_json: JSON.stringify(summary.artifacts),
+            outcome: summary.outcome,
+            errors_json: JSON.stringify(summary.errors),
+            todos_json: JSON.stringify(summary.todos),
+            confidence: summary.confidence,
+            reason: summary.reason || null,
+            generated_at: summary.generatedAt,
+            tokens_used: summary.tokensUsed || 0,
+            last_hit_at: Date.now(),
+            start_msg_id: summary.startMsgId,
+            end_msg_id: summary.endMsgId,
+        });
+        idxStmt.run({
+            session_id: sessionId,
+            turn_index: summary.turnIndex,
+            content_hash: contentHash,
+        });
     }
     insertMessages(sessionId, turnIndex, messages) {
         const stmt = this.db.prepare(`
       INSERT OR REPLACE INTO turn_messages
         (msg_id, session_id, turn_index, role, content, tool_calls, created_at, seq_in_turn)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (@msg_id, @session_id, @turn_index, @role, @content, @tool_calls, @created_at, @seq_in_turn)
     `);
         for (let seq = 0; seq < messages.length; seq++) {
             const msg = messages[seq];
@@ -285,23 +237,22 @@ class SummaryStore {
                     });
                 }
             }
-            stmt.run([
-                `${sessionId}-turn${turnIndex}-seq${seq}`,
-                sessionId,
-                turnIndex,
+            stmt.run({
+                msg_id: `${sessionId}-turn${turnIndex}-seq${seq}`,
+                session_id: sessionId,
+                turn_index: turnIndex,
                 role,
-                textContent,
-                toolCalls.length > 0 ? JSON.stringify(toolCalls) : null,
-                msg?.timestamp || Date.now(),
-                seq,
-            ]);
+                content: textContent,
+                tool_calls: toolCalls.length > 0 ? JSON.stringify(toolCalls) : null,
+                created_at: msg?.timestamp || Date.now(),
+                seq_in_turn: seq,
+            });
         }
-        stmt.free();
-        this.scheduleSave();
     }
     search(query, limit = 5) {
         if (!query.trim())
             return [];
+        // Strict validation: only allow safe alphanumeric + common word chars + Chinese
         const safe = query.replace(/[^a-zA-Z0-9\u4e00-\u9fff\s]/g, " ").trim();
         if (!safe || safe.length > 200)
             return [];
@@ -318,13 +269,8 @@ class SummaryStore {
         ORDER BY hit_count DESC, last_hit_at DESC
         LIMIT ?
       `);
-            stmt.bind([ftsQuery, limit]);
-            const results = [];
-            while (stmt.step()) {
-                results.push(this.rowToSummary(stmt.getAsObject()));
-            }
-            stmt.free();
-            return results;
+            const rows = stmt.all(ftsQuery, limit);
+            return rows.map((row) => this.rowToSummary(row));
         }
         catch {
             return [];
@@ -351,22 +297,9 @@ class SummaryStore {
 }
 // Global store instance (initialized lazily)
 let store = null;
-let storeDb = null;
-async function getStore() {
-    if (!store) {
-        mkdirSync(DATA_DIR, { recursive: true });
-        const dbPath = resolve(DATA_DIR, "summaries.db");
-        const SQL = await initSqlJs();
-        let db;
-        if (existsSync(dbPath)) {
-            db = new SQL.Database(readFileSync(dbPath));
-        }
-        else {
-            db = new SQL.Database();
-        }
-        storeDb = db;
-        store = new SummaryStore(db);
-    }
+function getStore() {
+    if (!store)
+        store = new SummaryStore();
     return store;
 }
 // ─── LLM Client ──────────────────────────────────────────────────────────────
@@ -434,7 +367,7 @@ function serializeMessages(messages) {
 }
 async function generateSummary(turnIndex, messages, sessionId, contentHash) {
     if (!LLM_CONFIG.apiKey || LLM_CONFIG.apiKey === "placeholder") {
-        log.info(`No LLM API key — summary skipped for turn ${turnIndex}`);
+        log().info(`No LLM API key — summary skipped for turn ${turnIndex}`);
         return null;
     }
     const serializedContent = serializeMessages(messages).slice(0, MAX_SERIALIZED_SIZE);
@@ -467,7 +400,7 @@ async function generateSummary(turnIndex, messages, sessionId, contentHash) {
             clearTimeout(timeout);
         }
         if (!res.ok) {
-            log.error(`LLM API error ${res.status} for turn ${turnIndex}`);
+            log().error(`LLM API error ${res.status} for turn ${turnIndex}`);
             return null;
         }
         const data = await res.json();
@@ -489,14 +422,13 @@ async function generateSummary(turnIndex, messages, sessionId, contentHash) {
             startMsgId: `turn-${turnIndex}-start`,
             endMsgId: `turn-${turnIndex}-end`,
         };
-        const db = await getStore();
-        db.insert(summary, sessionId, contentHash);
-        db.insertMessages(sessionId, turnIndex, messages);
-        log.info(`Summary generated for turn ${turnIndex}: ${summary.overview}`);
+        getStore().insert(summary, sessionId, contentHash);
+        getStore().insertMessages(sessionId, turnIndex, messages);
+        log().info(`Summary generated for turn ${turnIndex}: ${summary.overview}`);
         return summary;
     }
     catch (err) {
-        log.error(`LLM call failed for turn ${turnIndex}:`, String(err));
+        log().error(`LLM call failed for turn ${turnIndex}:`, String(err));
         return null;
     }
 }
@@ -873,9 +805,9 @@ function updateToolOutputIndex(messages, toolOutputs) {
         }
     }
 }
-async function syncSession(sessionId, messages) {
+function syncSession(sessionId, messages) {
     if (!Array.isArray(messages)) {
-        log.error("Expected messages to be array");
+        log().error("Expected messages to be array");
         return { messages: [], sourceTokens: 0, compressedTokens: 0, reduction: "0%" };
     }
     let store = sessions.get(sessionId);
@@ -894,8 +826,7 @@ async function syncSession(sessionId, messages) {
     for (const turn of completedTurns) {
         if (turn.summaryStatus !== "pending")
             continue;
-        const db = await getStore();
-        const cached = db.getByHash(turn.contentHash);
+        const cached = getStore().getByHash(turn.contentHash);
         if (cached) {
             turn.summary = cached;
             turn.summaryStatus = "done";
@@ -905,7 +836,7 @@ async function syncSession(sessionId, messages) {
         }
     }
     const { messages: compressed, sourceTokens, compressedTokens, reduction } = buildCompressedMessages(store.turns, store.toolOutputs);
-    log.info(`session=${sessionId.slice(0, 8)}.. turns=${store.turns.length} ` +
+    log().info(`session=${sessionId.slice(0, 8)}.. turns=${store.turns.length} ` +
         `tokens=${sourceTokens}→${compressedTokens} (${reduction})`);
     return { messages: compressed, sourceTokens, compressedTokens, reduction };
 }
@@ -976,7 +907,7 @@ function detectHistoryQuery(parts) {
  * The session DB path follows the same convention as
  * mcp_ctx_tool's session-db.ts: ~/.local/share/ctx_plugin/sessions/<hash>.db
  */
-async function loadSessionSnapshot() {
+function loadSessionSnapshot() {
     try {
         const hash = createHash("sha256")
             .update(process.cwd().toLowerCase())
@@ -989,24 +920,15 @@ async function loadSessionSnapshot() {
         const dbPath = resolve(sessionsDir, "sessions", `${hash}.db`);
         if (!existsSync(dbPath))
             return "";
-        const { Database } = await initSqlJs();
-        const sessionDb = new Database(readFileSync(dbPath));
+        const sessionDb = new DatabaseSync(dbPath);
         try {
-            const stmt = sessionDb.prepare("SELECT id, snapshot FROM session_resume WHERE consumed = 0 ORDER BY created_at DESC LIMIT 1");
-            if (!stmt.step()) {
-                stmt.free();
-                sessionDb.close();
-                return "";
-            }
-            const row = stmt.getAsObject();
+            // Find the latest unconsumed snapshot
+            const row = sessionDb.prepare("SELECT id, snapshot FROM session_resume WHERE consumed = 0 ORDER BY created_at DESC LIMIT 1").get();
             if (row?.snapshot && row.id != null) {
-                sessionDb.prepare("UPDATE session_resume SET consumed = 1 WHERE id = ?").run([row.id]);
-                const result = row.snapshot;
-                stmt.free();
-                sessionDb.close();
-                return result;
+                // Mark only THIS row  — avoid discarding other sessions' snapshots
+                sessionDb.prepare("UPDATE session_resume SET consumed = 1 WHERE id = ?").run(row.id);
+                return row.snapshot;
             }
-            stmt.free();
             return "";
         }
         finally {
@@ -1018,59 +940,84 @@ async function loadSessionSnapshot() {
     }
 }
 // ─── Plugin ─────────────────────────────────────────────────────────────────
-validateLLMConfig();
-export const TransformPlugin = () => ({
-    "chat.message": async (_input, output) => {
-        if (!output?.messages || !Array.isArray(output.messages))
-            return;
-        const messages = output.messages;
-        if (messages.length === 0)
-            return;
-        const sessionId = SESSION_ID;
-        // Step 1: Compress message history
-        const { messages: compressed, sourceTokens, compressedTokens, reduction } = await syncSession(sessionId, messages);
-        output.messages.splice(0, output.messages.length, ...compressed);
-        // Step 2: Inject history context if needed
-        const lastMsg = messages[messages.length - 1];
-        if (!lastMsg || getRole(lastMsg) !== "user")
-            return;
-        const query = detectHistoryQuery(lastMsg.parts || []);
-        if (!query)
-            return;
-        const db = await getStore();
-        const results = db.search(query, 3);
-        // Also load DB1 session snapshot for factual state (files, git, decisions)
-        let sessionSnapshot = "";
-        try {
-            sessionSnapshot = await loadSessionSnapshot();
-        }
-        catch {
-            // best-effort — DB1 may not be available
-        }
-        if (results.length === 0 && !sessionSnapshot)
-            return;
-        const contextParts = [];
-        // DB1 snapshot first (factual state: files, git, decisions)
-        if (sessionSnapshot) {
-            contextParts.push(sessionSnapshot);
-        }
-        // DB3 summaries second (semantic: what was done)
-        if (results.length > 0) {
-            contextParts.push(`=== Historical Context (LLM Summaries) ===\n` +
-                results.map((s) => `[Turn ${s.turnIndex}] ${s.overview}${s.intent ? ` | Intent: ${s.intent}` : ""}${s.outcome ? ` | ${s.outcome}` : ""}`).join("\n"));
-        }
-        const injected = contextParts.map((text) => ({
-            role: "system",
-            info: { role: "system", __transformInjected: true },
-            parts: [{ type: "text", text }],
-        }));
-        const insertAt = messages.length - 1;
-        output.messages.splice(insertAt, 0, ...injected);
-        log.info(`Injected ${injected.length} history blocks (DB3 summaries + ${sessionSnapshot ? "DB1 snapshot" : "no snapshot"}), ` +
-            `compression=${sourceTokens}→${compressedTokens} (${reduction})`);
-    },
-    "session.created": async () => {
-        log.info(`Session started, data dir: ${DATA_DIR}`);
-    },
-});
+export const TransformPlugin = async ({ client, directory }) => {
+    // ─── Init: resolve paths + config ───────────────────────────────────────
+    DATA_DIR = process.env.TRANSFORM_DATA_DIR || resolve(directory, ".ctx_plugin", "data");
+    const _fileConfig = loadLLMConfigFromFile(directory);
+    LLM_CONFIG = {
+        apiKey: process.env.CONTEXT_FORGE_LLM_API_KEY || process.env.TRANSFORM_LLM_API_KEY || _fileConfig.apiKey || "placeholder",
+        baseUrl: process.env.CONTEXT_FORGE_LLM_BASE_URL || process.env.TRANSFORM_LLM_BASE_URL || _fileConfig.baseUrl || "http://116.204.104.177:8123",
+        model: process.env.CONTEXT_FORGE_LLM_MODEL || process.env.TRANSFORM_LLM_MODEL || _fileConfig.model || "GLM-4.7",
+        maxTokens: _fileConfig.maxTokens ?? 2048,
+        temperature: _fileConfig.temperature ?? 0.3,
+    };
+    _log = {
+        info: (...a) => {
+            const message = a.join(" ");
+            client.app.log({ body: { service: "transform", level: "info", message } }).catch(() => { });
+        },
+        warn: (...a) => {
+            const message = a.join(" ");
+            client.app.log({ body: { service: "transform", level: "warn", message } }).catch(() => { });
+        },
+        error: (...a) => {
+            const message = a.join(" ");
+            client.app.log({ body: { service: "transform", level: "error", message } }).catch(() => { });
+        },
+    };
+    validateLLMConfig();
+    return ({
+        "experimental.chat.messages.transform": async (_input, output) => {
+            if (!output?.messages || !Array.isArray(output.messages))
+                return;
+            const messages = output.messages;
+            if (messages.length === 0)
+                return;
+            const sessionId = SESSION_ID;
+            // Step 1: Compress message history
+            const { messages: compressed, sourceTokens, compressedTokens, reduction } = syncSession(sessionId, messages);
+            output.messages.splice(0, output.messages.length, ...compressed);
+            // Step 2: Inject history context if needed
+            const lastMsg = messages[messages.length - 1];
+            if (!lastMsg || getRole(lastMsg) !== "user")
+                return;
+            const query = detectHistoryQuery(lastMsg.parts || []);
+            if (!query)
+                return;
+            const results = getStore().search(query, 3);
+            // Also load DB1 session snapshot for factual state (files, git, decisions)
+            let sessionSnapshot = "";
+            try {
+                sessionSnapshot = loadSessionSnapshot();
+            }
+            catch {
+                // best-effort — DB1 may not be available
+            }
+            if (results.length === 0 && !sessionSnapshot)
+                return;
+            const contextParts = [];
+            // DB1 snapshot first (factual state: files, git, decisions)
+            if (sessionSnapshot) {
+                contextParts.push(sessionSnapshot);
+            }
+            // DB3 summaries second (semantic: what was done)
+            if (results.length > 0) {
+                contextParts.push(`=== Historical Context (LLM Summaries) ===\n` +
+                    results.map((s) => `[Turn ${s.turnIndex}] ${s.overview}${s.intent ? ` | Intent: ${s.intent}` : ""}${s.outcome ? ` | ${s.outcome}` : ""}`).join("\n"));
+            }
+            const injected = contextParts.map((text) => ({
+                role: "system",
+                info: { role: "system", __transformInjected: true },
+                parts: [{ type: "text", text }],
+            }));
+            const insertAt = messages.length - 1;
+            output.messages.splice(insertAt, 0, ...injected);
+            log().info(`Injected ${injected.length} history blocks (DB3 summaries + ${sessionSnapshot ? "DB1 snapshot" : "no snapshot"}), ` +
+                `compression=${sourceTokens}→${compressedTokens} (${reduction})`);
+        },
+        "session.created": async () => {
+            log().info(`Session started, data dir: ${DATA_DIR}`);
+        },
+    });
+};
 export default TransformPlugin;

@@ -1,1 +1,0 @@
-import("@context-forge/shared-types").then(m=>console.log("OK")).catch(e=>console.error("FAIL:",e.message)); import("@modelcontextprotocol/sdk/server/mcp.js").then(m=>console.log("MCP OK")).catch(e=>console.error("MCP FAIL:",e.message))
