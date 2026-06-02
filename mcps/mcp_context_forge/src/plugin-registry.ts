@@ -21,7 +21,7 @@ export interface ToolDefinition {
   description: string;
   inputSchema: z.ZodTypeAny;
   annotations?: ToolAnnotations;
-  featureFlag?: "execution" | "memory";
+  featureFlag?: "execution";
   handler: (args: unknown) => Promise<ToolResult>;
 }
 
@@ -59,8 +59,9 @@ function zodToInputSchema(schema: z.ZodTypeAny): Record<string, unknown> {
 
 export interface FeatureFlags {
   execution: boolean;
-  memory: boolean;
 }
+
+// Memory tools (summary/recall/session) migrated to ctx_plugin plugin.
 
 export class PluginRegistry {
   #tools: ToolDefinition[] = [];
@@ -77,7 +78,6 @@ export class PluginRegistry {
   getTools(): ToolDefinition[] {
     return this.#tools.filter((tool) => {
       if (tool.featureFlag === "execution" && !this.#features.execution) return false;
-      if (tool.featureFlag === "memory" && !this.#features.memory) return false;
       return true;
     });
   }

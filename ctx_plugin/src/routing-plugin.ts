@@ -226,22 +226,29 @@ export const RoutingPlugin = async (input) => {
       output.status = "ask"
     },
 
-    // Inject ROUTING_BLOCK on first message + guidance from routing decisions
+    // Inject ROUTING_BLOCK on first message + guidance from routing decisions.
+    // NOTE: inject into output.context instead of output.parts to avoid
+    // polluting the message content that LLM processes.
     "chat.message": async (input, output) => {
-      // First message of session: inject routing block
+      // First message of session: store routing block in context (not visible to LLM as message)
       if (!_firstMessageInjected.has(sessionId)) {
         _firstMessageInjected.add(sessionId);
-        output.parts.push({
-          type: "text",
-          text: "\n\n" + ROUTING_BLOCK + "\n\n" +
-            "Memory tip: Use summary_recall or ctx_session to check prior context before asking the user.",
-        });
+        output.context = output.context ?? {}
+        if (typeof output.context === "object" && output.context !== null) {
+          ;(output.context as Record<string, unknown>).__routingBlock =
+            ROUTING_BLOCK + "\n\n" +
+            "Memory tip: Use summary_recall or ctx_session to check prior context before asking the user."
+        }
       }
 
+      // Guidance from routing decisions also goes into context
       if (output.context) {
         const ctx = output.context as Record<string, unknown>
         if (ctx.__ctxPluginGuidance) {
-          output.parts.push({ type: "text", text: "\n\n" + String(ctx.__ctxPluginGuidance) })
+          output.context = output.context ?? {}
+          if (typeof output.context === "object" && output.context !== null) {
+            ;(output.context as Record<string, unknown>).__ctxPluginGuidance = ctx.__ctxPluginGuidance
+          }
         }
       }
     },

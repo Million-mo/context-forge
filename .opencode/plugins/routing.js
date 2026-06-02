@@ -9,7 +9,7 @@ import path from "node:path";
 import os from "node:os";
 import { existsSync, readFileSync } from "node:fs";
 import { normalizeToolName, isCtxPluginTool } from "./hooks/tool-naming.js";
-import { routeTool } from "./hooks/routing.js";
+import { routeTool, ROUTING_BLOCK } from "./hooks/routing.js";
 // ─────────────────────────────────────────────────────────────────────────────
 // MCP ready detection
 // ─────────────────────────────────────────────────────────────────────────────
@@ -91,7 +91,11 @@ function isSafeCommand(cmd) {
 function isDangerousCommand(cmd) {
     return DANGEROUS_PATTERNS.some(rx => rx.test(cmd));
 }
-────────────────────
+// ─────────────────────────────────────────────────────────
+// First-message injection tracking
+// ─────────────────────────────────────────────────────────
+const _firstMessageInjected = new Set();
+// ─────────────────────────────────────────────────────────────────────────────
 // Plugin factory
 // ─────────────────────────────────────────────────────────────────────────────
 export const RoutingPlugin = async (input) => {
@@ -194,6 +198,33 @@ export const RoutingPlugin = async (input) => {
                 }
             }
             output.status = "ask";
+        },
+        // Inject ROUTING_BLOCK on first message + guidance from routing decisions.
+        // NOTE: inject into output.context instead of output.parts to avoid
+        // polluting the message content that LLM processes.
+        "chat.message": async (input, output) => {
+            // First message of session: store routing block in context (not visible to LLM )
+            if (!_firstMessageInjected.has(sessionId)) {
+                _firstMessageInjected.add(sessionId);
+                output.context = output.context ?? {};
+                if (typeof output.context === "object" && output.context !== null) {
+                    ;
+                    output.context.__routingBlock =
+                        ROUTING_BLOCK + "\n\n" +
+                            "Memory tip: Use summary_recall or ctx_session to check prior context before asking the user.";
+                }
+            }
+            // Guidance from routing decisions also goes into context
+            if (output.context) {
+                const ctx = output.context;
+                if (ctx.__ctxPluginGuidance) {
+                    output.context = output.context ?? {};
+                    if (typeof output.context === "object" && output.context !== null) {
+                        ;
+                        output.context.__ctxPluginGuidance = ctx.__ctxPluginGuidance;
+                    }
+                }
+            }
         },
     };
 };

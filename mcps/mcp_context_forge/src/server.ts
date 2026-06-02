@@ -16,26 +16,18 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 
 import { PluginRegistry } from "./plugin-registry.js";
-import { loadLLMConfig, createLLMClient } from "@context-forge/shared-types";
 import { PolyglotExecutor } from "./exec-engine/executor.js";
 import { detectRuntimes } from "./exec-engine/runtime.js";
 import { ContentStore } from "./index-engine/content-store.js";
 import {
-  setExecutor, setRuntimes, setStore, setRecallLLM, getProjectDir,
+  setExecutor, setRuntimes, setStore, getProjectDir,
 } from "./services.js";
 
 // ── Feature flags ─────────────────────────────────────────────────────────────
 
 const FEATURES = {
   execution: !process.env.CTX_DISABLE_EXECUTION,
-  memory: !process.env.CTX_DISABLE_MEMORY,
 };
-
-// ── Recall LLM setup ─────────────────────────────────────────────────────────
-
-const llmConfig = loadLLMConfig();
-const recallLLM = createLLMClient(llmConfig);
-setRecallLLM(recallLLM);
 
 // ── Executor setup ──────────────────────────────────────────────────────────
 
@@ -51,6 +43,9 @@ if (FEATURES.execution) {
 const contentStore = new ContentStore(getProjectDir());
 setStore(contentStore);
 
+// Memory tools (summary/recall/session) are now provided by the ctx_plugin plugin.
+// MCP keeps: infra, exec, and index tools.
+
 // ── Plugin Registry ─────────────────────────────────────────────────────────
 
 export const registry = new PluginRegistry(FEATURES);
@@ -60,14 +55,12 @@ export const registry = new PluginRegistry(FEATURES);
 import { infraTools } from "./tools/infra/index.js";
 import { execTools } from "./tools/exec/index.js";
 import { indexTools } from "./tools/index/index.js";
-import { memoryTools } from "./tools/memory/index.js";
 
 // ── Register tools ────────────────────────────────────────────────────────────
 
 for (const tool of infraTools) registry.register(tool);
 for (const tool of execTools) registry.register(tool);
 for (const tool of indexTools) registry.register(tool);
-for (const tool of memoryTools) registry.register(tool);
 
 // ── MCP Server ───────────────────────────────────────────────────────────────
 
@@ -95,12 +88,10 @@ server.server.setRequestHandler(CallToolRequestSchema, async (request): Promise<
 
 async function main() {
   console.error(`[mcp_context_forge] v${VERSION} starting...`);
-  console.error(`[mcp_context_forge] Features: execution=${FEATURES.execution}, memory=${FEATURES.memory}`);
-  console.error(`[mcp_context_forge] Recall LLM: ${recallLLM ? "enabled" : "disabled (no API key)"}`);
+  console.error(`[mcp_context_forge] Features: execution=${FEATURES.execution}`);
   console.error(`[mcp_context_forge] Project dir: ${getProjectDir()}`);
 
   (globalThis as Record<string, unknown>).__ctxRegistry = registry;
-  (globalThis as Record<string, unknown>).__recallLLM = recallLLM;
 
   const transport = new StdioServerTransport();
   await server.connect(transport);

@@ -20,10 +20,7 @@ export const doctorTool: ToolDefinition = {
     openWorldHint: false,
   },
   handler: async () => {
-    const { getRuntimes, getRuntimeInfo, getSummaryStats, getRecallLLM } = await import("../../services.js");
-
-    const registry = (globalThis as Record<string, unknown>).__ctxRegistry as { getFeatures(): { execution: boolean; memory: boolean } } | undefined;
-    const features = registry?.getFeatures() ?? { execution: true, memory: true };
+    const { getRuntimes, getRuntimeInfo } = await import("../../services.js");
 
     const checks: Array<{ check: string; status: string; detail: string }> = [];
     const version = "0.5.0";
@@ -39,7 +36,7 @@ export const doctorTool: ToolDefinition = {
       });
     }
 
-    // Content store check — use the global store set by server.ts
+    // Content store check
     try {
       const store = (globalThis as Record<string, unknown>).__ctxStore as { getStats(): StoreStats } | undefined;
       if (store) {
@@ -51,18 +48,6 @@ export const doctorTool: ToolDefinition = {
     } catch (e) {
       checks.push({ check: "content store", status: "fail", detail: `${e instanceof Error ? e.message : String(e)}` });
     }
-
-    // Summary DB check
-    if (features.memory) {
-      try {
-        const s = getSummaryStats();
-        checks.push({ check: "summaries DB", status: "pass", detail: `${s.totalSummaries} summaries, ${s.totalSessions} sessions` });
-      } catch (e) {
-        checks.push({ check: "summaries DB", status: "warn", detail: `${e instanceof Error ? e.message : String(e)}` });
-      }
-    }
-
-    checks.push({ check: "recall LLM", status: getRecallLLM() ? "pass" : "warn", detail: getRecallLLM() ? "enabled" : "no API key" });
 
     const passed = checks.filter((c) => c.status === "pass").length;
     const failed = checks.filter((c) => c.status === "fail").length;
@@ -76,7 +61,6 @@ export const doctorTool: ToolDefinition = {
           platform: process.platform,
           node: process.version,
           summary: { passed, failed, warned },
-          features,
           checks,
         }, null, 2),
       }],
