@@ -32,17 +32,22 @@ export interface PreparedStatement {
  */
 export class Database {
   #db: DatabaseSync;
+  #readonly: boolean;
 
   constructor(path: string, opts?: { readonly?: boolean }) {
-    this.#db = new DatabaseSync(path, { open: !opts?.readonly });
+    this.#readonly = !!opts?.readonly;
+    this.#db = new DatabaseSync(path, { readOnly: this.#readonly });
     this.#init();
   }
 
   #init(): void {
-    this.#db.exec("PRAGMA journal_mode=WAL");
-    this.#db.exec("PRAGMA synchronous=NORMAL");
-    this.#db.exec("PRAGMA cache_size=-64000");
-    this.#db.exec("PRAGMA temp_store=MEMORY");
+    // Only apply write-mode pragmas when not read-only
+    if (!this.#readonly) {
+      this.#db.exec("PRAGMA journal_mode=WAL");
+      this.#db.exec("PRAGMA synchronous=NORMAL");
+      this.#db.exec("PRAGMA cache_size=-64000");
+      this.#db.exec("PRAGMA temp_store=MEMORY");
+    }
   }
 
   exec(sql: string): void {

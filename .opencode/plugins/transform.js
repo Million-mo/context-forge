@@ -8,11 +8,136 @@
 // ─── Imports ─────────────────────────────────────────────────────────────────
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
-import { homedir } from "node:os";
 import { mkdirSync, appendFileSync, existsSync, readFileSync } from "node:fs";
+import { tool } from "@opencode-ai/plugin";
+function resolveDataDir() {
+    return resolve(process.cwd(), ".ctx_plugin");
+}
+function resolveSessionDbPath() {
+    const sessionsDir = resolve(resolveDataDir(), "sessions");
+    const hash = createHash("sha256").update(process.cwd().toLowerCase()).digest("hex").slice(0, 16);
+    return resolve(sessionsDir, `${hash}.db`);
+}
+const SESSION_SCHEMA = `
+CREATE TABLE IF NOT EXISTS sessions (
+  session_id TEXT NOT NULL PRIMARY KEY,
+  project_dir TEXT NOT NULL DEFAULT '',
+  started_at TEXT NOT NULL DEFAULT (datetime('now')),
+  last_event_at TEXT,
+  event_count INTEGER NOT NULL DEFAULT 0,
+  compact_count INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id TEXT NOT NULL,
+  type TEXT NOT NULL,
+  category TEXT NOT NULL DEFAULT '',
+  priority INTEGER NOT NULL DEFAULT 3,
+  data TEXT NOT NULL,
+  tool TEXT NOT NULL DEFAULT '',
+  args TEXT NOT NULL DEFAULT '',
+  result TEXT NOT NULL DEFAULT '',
+  bytes_avoided INTEGER NOT NULL DEFAULT 0,
+  bytes_returned INTEGER NOT NULL DEFAULT 0,
+  project_dir TEXT NOT NULL DEFAULT '',
+  source_hook TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id);
+CREATE INDEX IF NOT EXISTS idx_events_category ON events(session_id, category);
+CREATE TABLE IF NOT EXISTS tool_calls (
+  session_id TEXT NOT NULL, tool TEXT NOT NULL, calls INTEGER NOT NULL DEFAULT 0,
+  bytes_returned INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (session_id, tool)
+);
+CREATE TABLE IF NOT EXISTS session_resume (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL UNIQUE,
+  snapshot TEXT NOT NULL, event_count INTEGER NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')), consumed INTEGER NOT NULL DEFAULT 0
+);
+`;
+let _sdb = null;
+function getSessionDb() {
+    if (_sdb)
+        return _sdb;
+    const { Database } = require("bun:sqlite");
+    const dir = resolve(resolveDataDir(), "sessions");
+    mkdirSync(dir, { recursive: true });
+    _sdb = new Database(resolveSessionDbPath());
+    _sdb.exec("PRAGMA journal_mode = DELETE");
+    _sdb.exec("PRAGMA synchronous = NORMAL");
+    _sdb.exec(SESSION_SCHEMA);
+    return _sdb;
+}
+function sEnsureSession(sessionId, projectDir) {
+    getSessionDb().prepare(`INSERT OR IGNORE INTO sessions (session_id, project_dir) VALUES (?, ?)`).run(sessionId, projectDir);
+}
+function sInsertSessionEvent(ev) {
+    const db = getSessionDb();
+    sEnsureSession(ev.session_id, ev.project_dir ?? "");
+    db.prepare(`UPDATE sessions SET last_event_at = datetime('now'), event_count = event_count + 1 WHERE session_id = ?`).run(ev.session_id);
+    db.prepare(`INSERT INTO events (session_id, type, category, priority, data, tool, args, result, bytes_avoided, bytes_returned, project_dir, source_hook)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(ev.session_id, ev.type, ev.category ?? "", ev.priority ?? 3, ev.data ?? "", ev.tool ?? "", ev.args ?? "", ev.result ?? "", ev.bytes_avoided ?? 0, ev.bytes_returned ?? 0, ev.project_dir ?? "", ev.source_hook ?? "");
+}
+function sGetSessionEvents(sessionId, opts) {
+    const db = getSessionDb();
+    const limit = opts?.limit ?? 100;
+    if (opts?.type)
+        return db.prepare(`SELECT * FROM events WHERE session_id = ? AND type = ? ORDER BY id ASC LIMIT ?`).all(sessionId, opts.type, limit);
+    if (opts?.category)
+        return db.prepare(`SELECT * FROM events WHERE session_id = ? AND category = ? ORDER BY id ASC LIMIT ?`).all(sessionId, opts.category, limit);
+    return db.prepare(`SELECT * FROM events WHERE session_id = ? ORDER BY id ASC LIMIT ?`).all(sessionId, limit);
+}
+function sGetSessionMeta(sessionId) {
+    try {
+        return getSessionDb().prepare(`SELECT * FROM sessions WHERE session_id = ?`).get(sessionId) ?? null;
+    }
+    catch {
+        return null;
+    }
+}
+function sGetEventCount(sessionId) {
+    try {
+        const r = getSessionDb().prepare(`SELECT COUNT(*)  FROM events WHERE session_id = ?`).get(sessionId);
+        return r?.cnt ?? 0;
+    }
+    catch {
+        return 0;
+    }
+}
+function sIncrementCompactCount(sessionId) {
+    getSessionDb().prepare(`UPDATE sessions SET compact_count = compact_count + 1 WHERE session_id = ?`).run(sessionId);
+}
+function sUpsertResume(sessionId, snapshot, eventCount) {
+    getSessionDb().prepare(`INSERT INTO session_resume (session_id, snapshot, event_count) VALUES (?, ?, ?)
+     ON CONFLICT(session_id) DO UPDATE SET snapshot=excluded.snapshot, event_count=excluded.event_count, created_at=datetime('now'), consumed=0`).run(sessionId, snapshot, eventCount ?? 0);
+}
+function sGetToolCallStats(sessionId) {
+    try {
+        const db = getSessionDb();
+        const totals = db.prepare(`SELECT COALESCE(SUM(calls),0) , COALESCE(SUM(bytes_returned),0)  FROM tool_calls WHERE session_id = ?`).get(sessionId);
+        const rows = db.prepare(`SELECT tool, calls, bytes_returned FROM tool_calls WHERE session_id = ? ORDER BY calls DESC`).all(sessionId);
+        const byTool = {};
+        for (const r of rows)
+            byTool[r.tool] = { calls: r.calls, bytesReturned: r.bytes_returned };
+        return { totalCalls: totals?.calls ?? 0, totalBytesReturned: totals?.br ?? 0, byTool };
+    }
+    catch {
+        return { totalCalls: 0, totalBytesReturned: 0, byTool: {} };
+    }
+}
+function sTrackToolCall(sessionId, tool, bytesReturned) {
+    getSessionDb().prepare(`INSERT INTO tool_calls (session_id, tool, calls, bytes_returned, updated_at) VALUES (?, ?, 1, ?, datetime('now'))
+     ON CONFLICT(session_id, tool) DO UPDATE SET calls=calls+1, bytes_returned=bytes_returned+excluded.bytes_returned, updated_at=datetime('now')`).run(sessionId, tool, bytesReturned);
+}
 // ─── Bun SQLite Infrastructure ────────────────────────────────────────────────
 // OpenCode runs on Bun, which bundles bun:sqlite (native FTS5).
 // Adapt bun:sqlite API to the same interface used in transform.ts.
+// NOTE: DB paths must match @context-forge/shared-types/paths.ts exactly.
+// transform plugin writes summaries.db; MCP server reads from it.
+// Both must use process.cwd() so they share the same location for the same project.
+// summaries.db lives at: <cwd>/.ctx_plugin/data/summaries.db
+// sessions.db lives at: <cwd>/.ctx_plugin/sessions/<hash>.db
 function isSQLiteCorruptionError(msg) {
     return (msg.includes("SQLITE_CORRUPT") ||
         msg.includes("SQLITE_NOTADB") ||
@@ -22,7 +147,10 @@ function isSQLiteCorruptionError(msg) {
 function renameCorruptDB(dbPath) {
     const { renameSync } = require("node:fs");
     const ts = Date.now();
-    try { renameSync(dbPath, `${dbPath}.corrupt-${ts}`); } catch { /* ok */ }
+    try {
+        renameSync(dbPath, `${dbPath}.corrupt-${ts}`);
+    }
+    catch { /* ok */ }
 }
 function applyPragmas(db) {
     db.exec("PRAGMA journal_mode = DELETE");
@@ -51,12 +179,21 @@ function openDatabase(dbPath) {
 const _liveDBs = new Set();
 process.on("exit", () => {
     for (const db of _liveDBs) {
-        try { db.close(); } catch { /* ok */ }
+        try {
+            db.close();
+        }
+        catch { /* ok */ }
     }
     _liveDBs.clear();
 });
 function registerDB(db) { _liveDBs.add(db); }
 // ─── Config ─────────────────────────────────────────────────────────────────
+// NOTE: summaries.db path must match @context-forge/shared-types/paths.ts getSummariesDbPath().
+// Both use process.cwd() so they share the same location for the same project.
+// summaries.db lives at: <cwd>/.ctx_plugin/data/summaries.db
+function getSummariesDbPathInline() {
+    return resolve(process.cwd(), ".ctx_plugin", "data", "summaries.db");
+}
 const DATA_DIR = process.env.TRANSFORM_DATA_DIR
     || resolve(process.cwd(), ".ctx_plugin", "data");
 const LOG_DIR = resolve(process.cwd(), ".ctx_plugin", "log");
@@ -116,9 +253,9 @@ function getCtxPluginGlobalDir() {
     if (process.env.CTX_PLUGIN_CONFIG_DIR)
         return process.env.CTX_PLUGIN_CONFIG_DIR;
     if (process.platform === "win32") {
-        return resolve(process.env.APPDATA || resolve(homedir(), "AppData", "Roaming"), "ctx_plugin");
+        return resolve(process.env.APPDATA || resolve(process.env.HOME || "", "AppData", "Roaming"), "ctx_plugin");
     }
-    return resolve(homedir(), ".ctx_plugin");
+    return resolve(process.env.HOME || "", ".ctx_plugin");
 }
 function loadLLMConfigFromFile() {
     // Priority: project .ctx_plugin/config.json > project config.json (legacy) > global ~/.ctx_plugin/config.json
@@ -321,6 +458,64 @@ class SummaryStore {
             return [];
         }
     }
+    listBySession(sessionId) {
+        try {
+            const stmt = this.db.prepare(`
+        SELECT c.*, idx.session_id, idx.turn_index
+        FROM global_summary_cache c
+        JOIN session_turn_summaries idx ON c.content_hash = idx.content_hash
+        WHERE idx.session_id = ?
+        ORDER BY idx.turn_index ASC
+      `);
+            const rows = stmt.all(sessionId);
+            return rows.map((row) => ({ ...this.rowToSummary(row), sessionId: row.session_id ?? sessionId }));
+        }
+        catch (err) {
+            log.warn("listBySession failed:", String(err));
+            return [];
+        }
+    }
+    getSummary(sessionId, turnIndex) {
+        try {
+            const stmt = this.db.prepare(`
+        SELECT c.*, idx.session_id, idx.turn_index FROM global_summary_cache c
+        JOIN session_turn_summaries idx ON c.content_hash = idx.content_hash
+        WHERE idx.session_id = ? AND idx.turn_index = ?
+      `);
+            const row = stmt.get(sessionId, turnIndex);
+            if (!row)
+                return null;
+            return { ...this.rowToSummary(row), sessionId: row.session_id ?? sessionId };
+        }
+        catch (err) {
+            log.warn("getSummary failed:", String(err));
+            return null;
+        }
+    }
+    getMessages(sessionId, turnIndex) {
+        try {
+            const stmt = this.db.prepare(`
+        SELECT * FROM turn_messages
+        WHERE session_id = ? AND turn_index = ?
+        ORDER BY seq_in_turn ASC
+      `);
+            const rows = stmt.all(sessionId, turnIndex);
+            return rows.map((r) => ({
+                msgId: r.msg_id,
+                sessionId: r.session_id,
+                turnIndex: r.turn_index,
+                role: r.role,
+                content: r.content,
+                toolCalls: r.tool_calls ? JSON.parse(r.tool_calls) : undefined,
+                createdAt: r.created_at,
+                seqInTurn: r.seq_in_turn,
+            }));
+        }
+        catch (err) {
+            log.warn("getMessages failed:", String(err));
+            return [];
+        }
+    }
     rowToSummary(row) {
         return {
             turnIndex: row.turn_index ?? 0,
@@ -344,8 +539,10 @@ class SummaryStore {
 let store = null;
 function getStore() {
     if (!store) {
-        mkdirSync(DATA_DIR, { recursive: true });
-        const dbPath = resolve(DATA_DIR, "summaries.db");
+        const dbPath = getSummariesDbPathInline();
+        const dir = dbPath.replace(/[^/\\]+$/, "");
+        if (dir)
+            mkdirSync(dir, { recursive: true });
         const db = openDatabase(dbPath);
         registerDB(db);
         store = new SummaryStore(db);
@@ -987,82 +1184,390 @@ function detectHistoryQuery(parts) {
     }
     return null;
 }
-// ─── Session Snapshot from DB1 ──────────────────────────────────────────────
-/**
- * Load the latest resume snapshot from the session DB (DB1).
- * Best-effort — returns "" if DB1 doesn't exist or is unreadable.
- *
- * The session DB path follows the same convention as
- * mcp_ctx_tool's session-db.ts: ~/.local/share/ctx_plugin/sessions/<hash>.db
- */
-async function loadSessionSnapshot() {
-    try {
-        const hash = createHash("sha256")
-            .update(process.cwd().toLowerCase())
-            .digest("hex")
-            .slice(0, 16);
-        const sessionsDir = process.env.CTX_PLUGIN_DATA_DIR
-            || (process.env.XDG_DATA_HOME
-                ? resolve(process.env.XDG_DATA_HOME, "ctx_plugin")
-                : resolve(homedir(), ".local", "share", "ctx_plugin"));
-        const dbPath = resolve(sessionsDir, "sessions", `${hash}.db`);
-        if (!existsSync(dbPath))
-            return "";
-        const { Database } = require("bun:sqlite");
-        const sessionDb = new Database(dbPath);
-        try {
-            const stmt = sessionDb.prepare("SELECT id, snapshot FROM session_resume WHERE consumed = 0 ORDER BY created_at DESC LIMIT 1");
-            const row = stmt.get();
-            if (!row?.snapshot || row.id == null) {
-                sessionDb.close();
-                return "";
-            }
-            sessionDb.prepare("UPDATE session_resume SET consumed = 1 WHERE id = ?").run(row.id);
-            const result = row.snapshot;
-            sessionDb.close();
-            return result;
+// ─── Recall Prompt Builder ─────────────────────────────────────────────────────
+function buildRecallPrompt(query, summary, messages) {
+    const conversationText = messages.map((msg, idx) => {
+        let header = `[${idx}] ${msg.role.toUpperCase()}`;
+        if (msg.toolCalls) {
+            const calls = msg.toolCalls;
+            header += ` (tools: ${calls.map((t) => t.name).join(", ")})`;
         }
-        catch {
-            try {
-                sessionDb.close();
-            }
-            catch { /* ignore */ }
-            return "";
-        }
+        return `${header}\n${msg.content}`;
+    }).join("\n\n---\n\n");
+    return `You are a memory recall assistant. Given a conversation turn and a query, recall the most relevant information that answers the user's question.
+
+QUERY: "${query}"
+
+CONTEXT:
+- Intent: ${summary.intent}
+- Outcome: ${summary.outcome}
+- Overview: ${summary.overview}
+
+CONVERSATION:
+${conversationText}
+
+---
+
+Recall (output directly to answer the query):`;
+}
+// ─── Resume Snapshot Builder ───────────────────────────────────────────────────
+function buildResumeSnapshot(events, compactCount) {
+    const byCategory = {};
+    for (const ev of events) {
+        (byCategory[ev.category || "other"] ??= []).push(ev);
     }
-    catch {
+    const sections = [];
+    function dedupe(items, max = 15) {
+        return [...new Set(items.filter((s) => s.length > 0))].slice(0, max);
+    }
+    const fileEvents = byCategory["file"] ?? [];
+    if (fileEvents.length > 0) {
+        const lines = [];
+        const fileMap = new Map();
+        for (const ev of fileEvents) {
+            let e = fileMap.get(ev.data);
+            if (!e) {
+                e = { reads: 0, writes: 0 };
+                fileMap.set(ev.data, e);
+            }
+            if (ev.type === "file_write")
+                e.writes++;
+            else
+                e.reads++;
+        }
+        for (const [path, { reads, writes }] of Array.from(fileMap.entries()).slice(-12)) {
+            const name = path.split("/").pop() ?? path;
+            const parts = [];
+            if (reads > 0)
+                parts.push(`read×${reads}`);
+            if (writes > 0)
+                parts.push(`write×${writes}`);
+            lines.push(`  ${name} (${parts.join(", ")})`);
+        }
+        if (lines.length > 0)
+            sections.push(`Files (${fileMap.size} tracked):\n${lines.join("\n")}`);
+    }
+    const gitEvents = byCategory["git"] ?? [];
+    if (gitEvents.length > 0) {
+        sections.push(`Git operations (${gitEvents.length}):\n${dedupe(gitEvents.map((e) => `  ${e.data}`), 8).join("\n")}`);
+    }
+    const errorEvents = byCategory["error"] ?? [];
+    if (errorEvents.length > 0) {
+        sections.push(`Errors encountered:\n${dedupe(errorEvents.map((e) => `  - ${e.data}`), 5).join("\n")}`);
+    }
+    const mcpEvents = byCategory["mcp"] ?? [];
+    if (mcpEvents.length > 0) {
+        const counts = new Map();
+        for (const ev of mcpEvents)
+            counts.set(ev.data, (counts.get(ev.data) ?? 0) + 1);
+        const lines = [];
+        for (const [name, count] of counts)
+            lines.push(`  ${name} (${count}×)`);
+        sections.push(`MCP tools used:\n${lines.join("\n")}`);
+    }
+    if (sections.length === 0)
         return "";
-    }
+    return `=== Session Resume (compact #${compactCount}, ${events.length} events) ===\nFor full details on any item, use: ctx_summary_search(query="...", limit=5)\n\n${sections.join("\n\n")}`;
+}
+// ─── Category Inference ─────────────────────────────────────────────────────
+function inferCategory(toolName) {
+    const t = toolName.toLowerCase();
+    if (t === "read" || t === "write" || t === "edit" || t === "glob" || t === "grep")
+        return "file";
+    if (t === "git" || t.startsWith("git "))
+        return "git";
+    if (t.includes("search") || t.includes("index"))
+        return "search";
+    if (t.includes("exec") || t.includes("shell"))
+        return "exec";
+    if (t.includes("mcp") || t.includes("ctx_"))
+        return "mcp";
+    if (t.includes("skill"))
+        return "skill";
+    return "other";
 }
 // ─── Plugin ─────────────────────────────────────────────────────────────────
 validateLLMConfig();
-export const TransformPlugin = async ({ client }) => {
+export const TransformPlugin = async ({ client, directory }) => {
     initAppLogger(client);
     log.info(`Session started, data dir: ${DATA_DIR}`);
     return {
-        "experimental.chat.messages.transform": async (_input, output) => {
+        "tool.execute.after": async (input, output) => {
             try {
-                if (!output?.messages || !Array.isArray(output.messages))
+                const toolName = input.tool ?? "";
+                const toolSessionId = input.sessionID ?? output.sessionID ?? "";
+                const args = input.args ?? {};
+                if (!toolSessionId || !toolName)
                     return;
+                const outputStr = output?.output ?? "";
+                const bytesReturned = new TextEncoder().encode(outputStr).length;
+                sTrackToolCall(toolSessionId, toolName, bytesReturned);
+                const category = inferCategory(toolName);
+                sInsertSessionEvent({
+                    session_id: toolSessionId,
+                    type: "tool_call",
+                    category,
+                    data: args?.filePath || args?.path || toolName,
+                    tool: toolName,
+                    args: JSON.stringify(args ?? {}),
+                    result: outputStr.slice(0, 500),
+                    bytes_returned: bytesReturned,
+                    source_hook: "tool.execute.after",
+                });
+            }
+            catch (err) {
+                log.warn("tool.execute.after hook failed:", String(err));
+            }
+        },
+        tool: {
+            ctx_summary_list: tool({
+                description: "List all turn summaries for the current session, in chronological order.",
+                args: {},
+                async execute(_args, context) {
+                    try {
+                        const db = getStore();
+                        const summaries = db.listBySession(context.sessionID);
+                        return JSON.stringify({ sessionId: context.sessionID, count: summaries.length, results: summaries }, null, 2);
+                    }
+                    catch (err) {
+                        return `Error: ${String(err)}`;
+                    }
+                },
+            }),
+            ctx_summary_search: tool({
+                description: "Full-text search across turn summaries using FTS5. Returns matching summaries ranked by relevance.",
+                args: {
+                    query: tool.schema.string(),
+                    limit: tool.schema.number().optional().default(5),
+                },
+                async execute(args, context) {
+                    try {
+                        const db = getStore();
+                        const results = db.search(args.query, args.limit ?? 5);
+                        return JSON.stringify({ query: args.query, count: results.length, results }, null, 2);
+                    }
+                    catch (err) {
+                        return `Error: ${String(err)}`;
+                    }
+                },
+            }),
+            ctx_summary_get: tool({
+                description: "Get a single turn summary by session ID and turn index.",
+                args: {
+                    sessionId: tool.schema.string().optional(),
+                    turnIndex: tool.schema.number(),
+                },
+                async execute(args, context) {
+                    try {
+                        const sessionId = args.sessionId ?? context.sessionID;
+                        const db = getStore();
+                        const summary = db.getSummary(sessionId, args.turnIndex);
+                        if (!summary)
+                            return `Summary not found: session=${sessionId} turn=${args.turnIndex}`;
+                        return JSON.stringify({ sessionId, turnIndex: args.turnIndex, summary }, null, 2);
+                    }
+                    catch (err) {
+                        return `Error: ${String(err)}`;
+                    }
+                },
+            }),
+            ctx_summary_messages: tool({
+                description: "Get raw messages for a specific turn (lossless recall). Use to recover full tool call details.",
+                args: {
+                    sessionId: tool.schema.string().optional(),
+                    turnIndex: tool.schema.number(),
+                },
+                async execute(args, context) {
+                    try {
+                        const sessionId = args.sessionId ?? context.sessionID;
+                        const db = getStore();
+                        const messages = db.getMessages(sessionId, args.turnIndex);
+                        return JSON.stringify({ sessionId, turnIndex: args.turnIndex, count: messages.length, messages }, null, 2);
+                    }
+                    catch (err) {
+                        return `Error: ${String(err)}`;
+                    }
+                },
+            }),
+            ctx_recall: tool({
+                description: "Intent-driven recall: search conversation history by natural language, returns LLM-generated context summary.",
+                args: {
+                    query: tool.schema.string(),
+                    limit: tool.schema.number().optional().default(3),
+                },
+                async execute(args, context) {
+                    try {
+                        const db = getStore();
+                        const summaries = db.search(args.query, args.limit ?? 3);
+                        if (summaries.length === 0) {
+                            return JSON.stringify({ query: args.query, totalFound: 0, recalls: [] }, null, 2);
+                        }
+                        const recalls = [];
+                        for (const summary of summaries) {
+                            const messages = db.getMessages(summary.sessionId || context.sessionID, summary.turnIndex);
+                            const prompt = buildRecallPrompt(args.query, summary, messages);
+                            let recallText = "(summary only)";
+                            if (LLM_CONFIG.apiKey && LLM_CONFIG.apiKey !== "placeholder") {
+                                try {
+                                    const res = await fetch(`${LLM_CONFIG.baseUrl.replace(/\/$/, "")}/v1/chat/completions`, {
+                                        method: "POST",
+                                        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${LLM_CONFIG.apiKey}` },
+                                        body: JSON.stringify({ model: LLM_CONFIG.model, messages: [{ role: "user", content: prompt }], max_tokens: 512, temperature: 0.3 }),
+                                        signal: AbortSignal.timeout(30000),
+                                    });
+                                    if (res.ok) {
+                                        const data = await res.json();
+                                        recallText = data.choices?.[0]?.message?.content?.trim() || "(no response)";
+                                    }
+                                }
+                                catch { }
+                            }
+                            recalls.push({ turnIndex: summary.turnIndex, sessionId: summary.sessionId || context.sessionID, overview: summary.overview, intent: summary.intent, outcome: summary.outcome, confidence: summary.confidence, recall: recallText });
+                        }
+                        return JSON.stringify({ query: args.query, totalFound: recalls.length, recalls }, null, 2);
+                    }
+                    catch (err) {
+                        return `Error: ${String(err)}`;
+                    }
+                },
+            }),
+            ctx_session: tool({
+                description: "Session analytics: events tracked, tool call stats, category breakdown, and context savings report.",
+                args: {},
+                async execute(_args, context) {
+                    try {
+                        sEnsureSession(context.sessionID, context.directory);
+                        const meta = sGetSessionMeta(context.sessionID);
+                        if (!meta)
+                            return `Session ${context.sessionID} not found`;
+                        const events = sGetSessionEvents(context.sessionID, { limit: 1000 });
+                        const toolStats = sGetToolCallStats(context.sessionID);
+                        const totalEvents = sGetEventCount(context.sessionID);
+                        const catMap = new Map();
+                        for (const ev of events) {
+                            const cat = String(ev.category || "other");
+                            let entry = catMap.get(cat);
+                            if (!entry) {
+                                entry = { count: 0, previews: new Set() };
+                                catMap.set(cat, entry);
+                            }
+                            entry.count++;
+                            if (entry.previews.size < 5) {
+                                let display = String(ev.data ?? "");
+                                if (cat === "file")
+                                    display = display.split("/").pop() ?? display;
+                                if (display.length > 40)
+                                    display = display.slice(0, 37) + "...";
+                                entry.previews.add(display);
+                            }
+                        }
+                        const categoryLabels = {
+                            file: "Files tracked", git: "Git operations", task: "Tasks in progress",
+                            error: "Errors caught", decision: "Key decisions", rule: "Project rules",
+                            env: "Environment setup", cwd: "Working directory", mcp: "MCP tools used",
+                            skill: "Skills used", subagent: "Delegated work",
+                        };
+                        const byCategory = Array.from(catMap.entries())
+                            .sort((a, b) => b[1].count - a[1].count)
+                            .slice(0, 10)
+                            .map(([cat, { count, previews }]) => ({
+                            category: cat,
+                            count,
+                            label: categoryLabels[cat] ?? cat,
+                            preview: Array.from(previews).join(", "),
+                        }));
+                        let bytesReturned = 0;
+                        for (const ev of events)
+                            bytesReturned += ev.bytes_returned ?? 0;
+                        const startMs = new Date(meta.started_at).getTime();
+                        const uptimeMin = ((Date.now() - startMs) / 60_000).toFixed(1);
+                        const analytics = {
+                            sessionId: meta.session_id,
+                            projectDir: meta.project_dir,
+                            startedAt: meta.started_at,
+                            uptimeMin,
+                            totalEvents,
+                            compactCount: meta.compact_count,
+                            byCategory,
+                            toolStats,
+                            bytesReturned,
+                        };
+                        sIncrementCompactCount(context.sessionID);
+                        const snapshot = buildResumeSnapshot(events, Number(meta.compact_count) + 1);
+                        if (snapshot)
+                            sUpsertResume(context.sessionID, snapshot, events.length);
+                        const lines = [];
+                        lines.push("=== Session Statistics ===");
+                        lines.push(`Session:  ${analytics.sessionId}`);
+                        lines.push(`Project:  ${analytics.projectDir}`);
+                        lines.push(`Uptime:   ${analytics.uptimeMin} min`);
+                        lines.push(`Events:   ${analytics.totalEvents} tracked`);
+                        lines.push(`Compacts: ${analytics.compactCount}`);
+                        lines.push("");
+                        if (analytics.toolStats.totalCalls > 0) {
+                            lines.push("--- Tool Calls ---");
+                            lines.push(`Total: ${analytics.toolStats.totalCalls} calls`);
+                            for (const [tool, stats] of Object.entries(analytics.toolStats.byTool).sort((a, b) => b[1].calls - a[1].calls).slice(0, 8)) {
+                                lines.push(`  ${tool}: ${stats.calls} calls`);
+                            }
+                            lines.push("");
+                        }
+                        if (byCategory.length > 0) {
+                            lines.push("--- Event Categories ---");
+                            const maxCount = byCategory[0].count;
+                            for (const cat of byCategory) {
+                                const bar = maxCount > 0 ? "█".repeat(Math.max(1, Math.round((cat.count / maxCount) * 20))) : "";
+                                lines.push(`  ${cat.label.padEnd(20)} ${String(cat.count).padStart(4)} ${bar}`);
+                            }
+                        }
+                        return lines.join("\n");
+                    }
+                    catch (err) {
+                        return `Error: ${String(err)}`;
+                    }
+                },
+            }),
+        },
+        "experimental.chat.messages.transform": async (input, output) => {
+            try {
+                log.info(`[hook:transform] called, messages=${output?.messages?.length ?? "undefined"}`);
+                if (!output?.messages || !Array.isArray(output.messages)) {
+                    log.warn(`[hook:transform] abort: output.messages is not an array`);
+                    return;
+                }
                 const rawMessages = output.messages;
-                // Normalize: SDK gives {info, parts}[] — convert to internal format {info, parts}
-                // for use by splitIntoTurns / getRole / etc.
                 const messages = rawMessages.map((m) => ({
                     info: m.info ?? {},
                     parts: m.parts ?? [],
                 }));
-                if (messages.length === 0)
+                if (messages.length === 0) {
+                    log.warn(`[hook:transform] abort: no messages`);
                     return;
-                const sessionId = SESSION_ID;
-                // Step 1: Compress message history
+                }
+                log.info(`[hook:transform] session dir=${directory}, roles=${messages.map((m) => m.info?.role).join(",")}`);
+                const sessionId = output.messages[0]?.info?.metadata?.sessionID
+                    ?? output.sessionID
+                    ?? SESSION_ID;
+                log.info(`[hook:transform] sessionId=${sessionId} dir=${directory}`);
+                const beforeIds = messages.map((m) => m.info?.id).join(",");
+                const beforeText = messages.map((m) => {
+                    const txt = (m.parts || []).filter((p) => p.type === "text").map((p) => p.text?.slice(0, 80)).join("|");
+                    return `${m.info?.role}:${txt.slice(0, 80)}`;
+                }).join(" || ");
+                log.info(`[hook:transform] BEFORE msgs=${messages.length} ids=${beforeIds} texts=${beforeText}`);
+                sEnsureSession(sessionId, directory);
                 const { messages: compressed, sourceTokens, compressedTokens, reduction } = await syncSession(sessionId, messages);
-                // Normalize compressed output back to SDK format {info, parts}[]
+                const afterIds = compressed.map((m) => m.info?.id).join(",");
+                const afterText = compressed.map((m) => {
+                    const txt = (m.parts || []).filter((p) => p.type === "text").map((p) => p.text?.slice(0, 80)).join("|");
+                    return `${m.info?.role}:${txt.slice(0, 80)}`;
+                }).join(" || ");
+                log.info(`[hook:transform] AFTER  msgs=${compressed.length} ids=${afterIds} texts=${afterText}`);
                 const sdkMessages = compressed.map((m) => ({
                     info: m.info ?? {},
                     parts: m.parts ?? [],
                 }));
                 output.messages.splice(0, output.messages.length, ...sdkMessages);
-                // Step 2: Inject history context if needed
                 const lastMsg = messages[messages.length - 1];
                 if (!lastMsg || getRole(lastMsg) !== "user")
                     return;
@@ -1071,35 +1576,18 @@ export const TransformPlugin = async ({ client }) => {
                     return;
                 const db = getStore();
                 const results = db.search(query, 3);
-                let sessionSnapshot = "";
-                try {
-                    sessionSnapshot = await loadSessionSnapshot();
-                }
-                catch {
-                    // best-effort — DB1 may not be available
-                }
-                if (results.length === 0 && !sessionSnapshot)
+                if (results.length === 0)
                     return;
-                const contextParts = [];
-                if (sessionSnapshot) {
-                    contextParts.push(sessionSnapshot);
-                }
-                if (results.length > 0) {
-                    contextParts.push(`=== Historical Context (LLM Summaries) ===\n` +
-                        results.map((s) => `[Turn ${s.turnIndex}] ${s.overview}${s.intent ? ` | Intent: ${s.intent}` : ""}${s.outcome ? ` | ${s.outcome}` : ""}`).join("\n"));
-                }
-                const injected = contextParts.map((text) => ({
+                const injected = results.map((s) => ({
                     info: { role: "system", __transformInjected: true },
-                    parts: [{ type: "text", text }],
+                    parts: [{ type: "text", text: `=== Historical Context ===\n[Turn ${s.turnIndex}] ${s.overview}${s.intent ? ` | Intent: ${s.intent}` : ""}${s.outcome ? ` | ${s.outcome}` : ""}` }],
                 }));
                 const insertAt = messages.length - 1;
                 output.messages.splice(insertAt, 0, ...injected);
-                log.info(`Injected ${injected.length} history blocks (DB3 summaries + ${sessionSnapshot ? "DB1 snapshot" : "no snapshot"}), ` +
-                    `compression=${sourceTokens}→${compressedTokens} (${reduction})`);
+                log.info(`Injected ${injected.length} history blocks, compression=${sourceTokens}→${compressedTokens} (${reduction})`);
             }
             catch (err) {
                 log.error("Transform hook failed:", String(err));
-                // Do NOT re-throw — prevents opencode from crashing
             }
         },
     };

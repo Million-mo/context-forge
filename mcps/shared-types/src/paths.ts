@@ -113,6 +113,32 @@ export function getCavemanFlagPath(): string {
 // Database paths
 // ─────────────────────────────────────────────────────────
 
+// ─────────────────────────────────────────────────────────
+// Global data directory (for summaries + sessions): ~/.ctx_plugin/
+// Uses ~/.ctx_plugin/ to match the original transform plugin behavior
+// and provide a stable shared location between OpenCode plugin + MCP server.
+//
+// Priority:
+//   1. CTX_PLUGIN_DATA_DIR env var (explicit override)
+//   2. XDG_DATA_HOME/ctx_plugin  (if set)
+//   3. ~/.ctx_plugin              (default on macOS/Linux)
+//
+// Layout:
+//   ~/.ctx_plugin/
+//   ├── data/
+//   │   └── summaries.db       ← LLM turn summaries
+//   └── sessions/
+//       └── <hash>.db        ← session events
+// ─────────────────────────────────────────────────────────
+
+function resolveGlobalDataDir(): string {
+  const isWin = process.platform === "win32"
+  if (process.env.CTX_PLUGIN_DATA_DIR) return process.env.CTX_PLUGIN_DATA_DIR
+  if (process.env.XDG_DATA_HOME) return resolve(process.env.XDG_DATA_HOME, "ctx_plugin")
+  if (isWin) return resolve(process.env.APPDATA || resolve(process.env.HOME || "", "AppData", "Roaming"), "ctx_plugin")
+  return resolve(process.env.HOME || "", ".ctx_plugin")
+}
+
 export function getSummariesDbPath(projectDir?: string): string {
   return resolve(getProjectDataDir(projectDir), "summaries.db")
 }
@@ -121,6 +147,6 @@ export function getContentDbPath(projectDir?: string): string {
   return resolve(getProjectDataDir(projectDir), "content.db")
 }
 
-export function getSessionsDir(): string {
-  return resolve(getGlobalDataDir(), "sessions")
+export function getSessionsDir(projectDir?: string): string {
+  return resolve(getProjectDataDir(projectDir), "sessions")
 }

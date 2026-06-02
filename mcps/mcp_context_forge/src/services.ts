@@ -6,14 +6,15 @@
  * - No more duplicate lazy-init code scattered across tools
  */
 
-import { Database } from "@context-forge/shared-types";
+import { Database, openDatabase } from "@context-forge/shared-types";
 import { getSummariesDbPath } from "@context-forge/shared-types";
 import { createHash } from "node:crypto";
-import { existsSync, statSync } from "node:fs";
+import { existsSync, statSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve, join } from "node:path";
 import { execFileSync } from "node:child_process";
 import type { Language, RuntimeInfo, RuntimeMap } from "./types.js";
+import { SUMMARIES_DB_SCHEMA } from "@context-forge/shared-types";
 
 // ── Project dir ─────────────────────────────────────────────────────────────
 
@@ -139,15 +140,14 @@ CREATE TABLE IF NOT EXISTS session_resume (
 );
 `;
 
+function resolveDataDir(): string {
+  if (process.env.CLAUDE_PROJECT_DIR) return resolve(process.env.CLAUDE_PROJECT_DIR, ".ctx_plugin")
+  if (process.env.PROJECT_DIR) return resolve(process.env.PROJECT_DIR, ".ctx_plugin")
+  return resolve(process.cwd(), ".ctx_plugin")
+}
+
 function resolveSessionDbPath(projectDir?: string): string {
-  const base =
-    process.env.CTX_PLUGIN_DATA_DIR ||
-    (process.env.XDG_DATA_HOME
-      ? resolve(process.env.XDG_DATA_HOME, "ctx_plugin")
-      : process.platform === "win32"
-        ? resolve(process.env.APPDATA || resolve(homedir(), "AppData", "Roaming"), "ctx_plugin")
-        : resolve(homedir(), ".local", "share", "ctx_plugin"));
-  const sessionsDir = resolve(base, "sessions");
+  const sessionsDir = resolve(resolveDataDir(), "sessions");
 
   const hashBase = projectDir || process.cwd();
   const hash = createHash("sha256").update(hashBase.toLowerCase()).digest("hex").slice(0, 16);
@@ -157,6 +157,7 @@ function resolveSessionDbPath(projectDir?: string): string {
 export function initSessionDb(projectDir?: string): Database {
   if (!_sessionDb) {
     _sessionDbLazyPath = resolveSessionDbPath(projectDir);
+    mkdirSync(_sessionDbLazyPath.replace(/[^/\\]+$/, ""), { recursive: true });
     _sessionDb = new Database(_sessionDbLazyPath);
     _sessionDb.exec(SESSION_DB_SCHEMA);
 
@@ -350,13 +351,42 @@ export function getEventCount(sessionId: string): number {
 
 let _summaryDb: Database | null = null;
 
+/**
+ * Open (or create) the summaries database.
+ *
+ * The transform plugin writes summaries here; the MCP server reads them.
+ * Path matches transform plugin's getSummariesDbPathInline():
+ *   <cwd>/.ctx_plugin/data/summaries.db
+ *
+ * If the DB doesn't exist, it is created with the full schema (FTS5, triggers).
+ * Uses WAL mode for concurrent read/write safety.
+ */
 export function openSummaryDb(): Database {
   if (_summaryDb) return _summaryDb;
+
   const path = getSummariesDbPath();
-  if (!existsSync(path)) {
-    throw new Error(`Database not found at ${path}. Enable the transform plugin in ctx_plugin first.`);
+  const dir = path.replace(/[^/\\]+$/, "");
+
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { recursive: true });
   }
-  _summaryDb = new Database(path, { readonly: true });
+
+  _summaryDb = openDatabase(path);
+
+  // Inject schema — same as what transform plugin creates via build-plugins.mjs.
+  // The transform plugin owns writes; MCP is read-only in practice, but we open
+  // read-write so we can create the DB on first use.
+  try {
+    _summaryDb.exec(SUMMARIES_DB_SCHEMA);
+  } catch (err) {
+    // Schema may already exist (CREATE TABLE IF NOT EXISTS is idempotent)
+    if (err instanceof Error && !err.message.includes("table") && !err.message.includes("already exists")) {
+      _summaryDb.close();
+      _summaryDb = null;
+      throw err;
+    }
+  }
+
   return _summaryDb;
 }
 

@@ -3,6 +3,10 @@
 export { Database, openDatabase, openReadonlyDatabase } from "./db.js"
 export type { PreparedStatement } from "./db.js"
 
+// ─── Schema ────────────────────────────────────────────────────────────────────
+
+export { SUMMARIES_DB_SCHEMA } from "./schema.js"
+
 // ─── LLM Client ──────────────────────────────────────────────────────────────
 
 export { OpenAIClient, createLLMClient } from "./llm-client.js"
